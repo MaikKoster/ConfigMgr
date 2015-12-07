@@ -65,8 +65,8 @@ Describe "Script with parameter" {
         It "Collection ID and multiple ResourceID" {
             Main -Start FullScan -CollectionID "TST00001" -ResourceID @(123456,234567) | select -ExpandProperty CollectionID | Should Be "TST00001"
             $ResourceID = Main -Start FullScan -CollectionID "TST00001" -ResourceID @(123456,234567) | select -ExpandProperty ResourceID
-            $ResourceID | select -First 1 | Should Be 123456
-            $ResourceID | select -Skip 1 -First 1 | Should Be 234567
+            $ResourceID[0] | Should Be 123456
+            $ResourceID[1] | Should Be 234567
         }
 
         It "Collection ID and ResourceName" {
@@ -77,8 +77,8 @@ Describe "Script with parameter" {
         It "Collection ID and multiple ResourceNames" {
             Main -Start FullScan -CollectionID "TST00001" -ResourceName @("TestComputer", "TestComputer2") | select -ExpandProperty CollectionID | Should Be "TST00001"
             $ResourceID = Main -Start FullScan -CollectionID "TST00001" -ResourceName "TestComputer", "TestComputer2"| select -ExpandProperty ResourceID
-            $ResourceID | select -First 1 | Should Be 987654
-            $ResourceID | select -Skip 1 -First 1 | Should Be 876543
+            $ResourceID[0] | Should Be 987654
+            $ResourceID[1] | Should Be 876543
         }
 
         It "Valid operation" {
@@ -326,9 +326,9 @@ Describe "Get-Computer" {
     It "Return list of computers by multiple names" {
         $Computers = Get-Computer -Name "TestComputer1", "TestComputer2" | select -ExpandProperty "Filter" 
 
-        ($Computers).Count | Should be 2
-        $Computers |  select -First 1 | Should Be "((Name = 'TestComputer1') OR (NetbiosName = 'TestComputer1'))"
-        $Computers |  select -Skip 1 -First 1 | Should Be "((Name = 'TestComputer2') OR (NetbiosName = 'TestComputer2'))"
+        $Computers.Count | Should be 2
+        $Computers[0] | Should Be "((Name = 'TestComputer1') OR (NetbiosName = 'TestComputer1'))"
+        $Computers[1] | Should Be "((Name = 'TestComputer2') OR (NetbiosName = 'TestComputer2'))"
     }
 
     It "Return Computer by name using the pipepline" {
@@ -340,9 +340,9 @@ Describe "Get-Computer" {
     It "Return list of computers by multiple names using the pipeline" {
         $Computers = @("TestComputer1", "TestComputer2") | Get-Computer | select -ExpandProperty "Filter" 
 
-        ($Computers).Count | Should be 2
-        $Computers |  select -First 1 | Should Be "((Name = 'TestComputer1') OR (NetbiosName = 'TestComputer1'))"
-        $Computers |  select -Skip 1 -First 1 | Should Be "((Name = 'TestComputer2') OR (NetbiosName = 'TestComputer2'))"
+        $Computers.Count | Should be 2
+        $Computers[0] | Should Be "((Name = 'TestComputer1') OR (NetbiosName = 'TestComputer1'))"
+        $Computers[1] | Should Be "((Name = 'TestComputer2') OR (NetbiosName = 'TestComputer2'))"
     }
 }
 
@@ -381,10 +381,8 @@ Describe "Start-ClientOperation" {
         Start-ClientOperation -Operation FullScan -CollectionID "XXX00001" -ResourceID 42| select -ExpandProperty "ArgumentList" | select -Skip 1 -First 1 | Should Be "42"
 
         $ResourceIDs = Start-ClientOperation -Operation FullScan -CollectionID "XXX00001" -ResourceID 42,43,44| select -ExpandProperty "ArgumentList" | select -skip 1 -First 1 
-        ($ResourceIDs).Count | Should Be 3
-        $ResourceIDs |  select -First 1 | Should Be "42"
-        $ResourceIDs |  select -Skip 1 -First 1 | Should Be "43"
-        $ResourceIDs |  select -Skip 2 -First 1 | Should Be "44"
+        $ResourceIDs.Count | Should Be 3
+        $ResourceIDs | Should Be ("42", "43", "44")
     }
 
     It "Use correct Operation" {
