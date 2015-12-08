@@ -29,15 +29,18 @@
         Deletes all Expired Client Operations from a remote computer with different credentials
 
     .LINK
-        http://maikkoster.com
+        http://maikkoster.com/start-cancel-or-delete-a-sccm-client-operation/
 
     .NOTES
+        Copyright (c) 2015 Maik Koster
+
         Author:  Maik Koster
-        Version: 1.0
-        Date:    07.12.2015
+        Version: 1.1
+        Date:    08.12.2015
 
         Version History:
             1.0 - 07.12.2015 - Published script
+            1.1 - 08.12.2015 - Updated Help. Fixed Whatif issue
 
 #>
 [CmdletBinding(SupportsShouldProcess)]
