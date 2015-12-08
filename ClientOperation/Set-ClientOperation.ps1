@@ -127,7 +127,7 @@ Begin {
     ###############################################################################
     function Main {
 
-        [CmdLetBinding()]
+        [CmdLetBinding(SupportsShouldProcess)]
         PARAM(
             [string]$Start,
             [switch]$Cancel,
