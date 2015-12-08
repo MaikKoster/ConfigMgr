@@ -2,19 +2,42 @@
 
 <#
     .SYNOPSIS
-    Starts, cancels or deletes a Client Operation
+        Starts, cancels or deletes a Client Operation
 
     .DESCRIPTION 
-    Starts, cancels or deletes a System Center Configuration manager (SCCM) Client Operation.
+        Starts, cancels or deletes a System Center Configuration Manager (SCCM) Client Operation
+        like a SCEP FullScan, Software Update Evaluation or Computer Policy download and evaluation.
+
+    .EXAMPLE
+        .\Set-ClientOperation.ps1 -Start FullScan -ResourceName TestComputer
+    
+    Starts a Full Scan on one computer
+
+    .EXAMPLE
+        .\Set-ClientOperation.ps1 -Start QuickScan -CollectionName "All Windows 10 machines"
+        
+        Starts a QuickScan on all members of a collection
+
+    .EXAMPLE
+        .\Set-ClientOperation.ps1 -Cancel -All -ProviderServer CMServer01 -SiteCode XYZ
+        
+        Cancels All Client Operations from a remote computer
+
+    .EXAMPLE
+        .\Set-ClientOperation.ps1 -Delete -Expired -ProviderServer CMServer01 -SiteCode XYZ -Credential (Get-Credential CMAdmin)
+
+        Deletes all Expired Client Operations from a remote computer with different credentials
+
+    .LINK
+        http://maikkoster.com
 
     .NOTES
-
         Author:  Maik Koster
         Version: 1.0
         Date:    07.12.2015
 
-        History:
-            07.12.2015 - Published script
+        Version History:
+            1.0 - 07.12.2015 - Published script
 
 #>
 [CmdletBinding(SupportsShouldProcess)]
