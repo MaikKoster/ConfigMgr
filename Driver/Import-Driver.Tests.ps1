@@ -134,6 +134,7 @@ Describe "Get-CMObject" {
     }
 
 }
+
 Describe "New-CMObject" {
     Context "No connection" {
         Mock Test-CMConnection {throw}
@@ -168,6 +169,54 @@ Describe "New-CMObject" {
 
             $TestObject | select -ExpandProperty "Class" | Should Be "TestClass"
             $TestObject | select -ExpandProperty "Arguments" | %{$_.TestArg} |  Should Be 1
+        }
+
+    }
+
+}
+
+Describe "New-CMInstance" {
+
+    Context "No connection" {
+        Mock Test-CMConnection {throw}
+
+        It "Throw if no connection has been established" {
+            {New-CMObject -Class "TestClass" -Arguments @{TestArg=1} } | Should Throw
+        }
+    }
+
+    Context "Connection established" {
+
+        $script:CMProviderServer = "TestProviderServer"
+        $script:CMSiteCode = "XXX"
+        $script:CMNamespace = "root\sms\Site_XXX"
+
+        Mock Get-WmiObject { 
+            $Result = [PSCustomObject]@{List = $List; Class = $Class; Namespace = $Namespace; ComputerName = $ComputerName} 
+            $Result | Add-Member -MemberType ScriptMethod -Name CreateInstance -Value {
+                    [PSCustomObject]@{List = $this.List; Class = $this.Class; Namespace = $this.Namespace; ComputerName = $this.ComputerName; CreateInstanceCalled=$True}
+                }  
+            $Result  
+        }
+
+        It "Throw if class is missing" {
+            {New-CMInstance -Class ""} | Should Throw
+        }
+        
+        It "Use Provider connection" {
+            $TestObject = New-CMInstance -Class "TestClass" 
+            
+            $TestObject | select -ExpandProperty "Namespace" | Should Be "root\sms\site_XXX"
+            $TestObject | select -ExpandProperty "ComputerName" | Should Be "TestProviderServer"
+        } 
+
+        It "Use specified values" {
+            $TestObject = New-CMInstance -Class "TestClass" 
+
+            $TestObject | select -ExpandProperty "Class" | Should Be "TestClass"
+            $TestObject | select -ExpandProperty "List" | Should Be $True
+            $TestObject | select -ExpandProperty "CreateInstanceCalled" | Should Be $true
+            
         }
 
     }
@@ -260,6 +309,161 @@ Describe "New-DriverPackage" {
     }
 }
 
+Describe "Get-Driver" {
+    
+    Mock Get-CMObject { 
+        [PSCustomObject]@{Class = $Class; Filter = $Filter}
+    }
+    
+    It "Throw if no name is supplied" {
+        {Get-Driver -Name ""} | Should Throw
+    } 
 
+    It "Return Drivers by Driver Package" {
+        $TestDriver = Get-Driver -DriverPackage @{Name = "TestPackage"; PackageID = "TST00001"}
+        
+        $TestDriver | select -ExpandProperty "Class" | Should Be "SMS_Driver"
+        $TestDriver | select -ExpandProperty "Filter" | Should Not Be ""
+        $TestDriver | select -ExpandProperty "Filter" | Should Be "CI_ID IN (SELECT CTC.CI_ID FROM SMS_CIToContent AS CTC JOIN SMS_PackageToContent AS PTC ON CTC.ContentID=PTC.ContentID JOIN SMS_DriverPackage AS Pkg ON PTC.PackageID=Pkg.PackageID WHERE Pkg.PackageID='TST00001')"
+    }
+}
 
+Describe "Get-Category" {
+    
+    Mock Get-CMObject { 
+        [PSCustomObject]@{Class = $Class; Filter = $Filter}
+    }
+    
+    It "Throw if no name is supplied" {
+        {Get-Category -Name ""} | Should Throw
+    } 
 
+    It "Return Category by Name" {
+        $TestCategory = Get-Category -Name "TestCategory"
+        
+        $TestCategory | select -ExpandProperty "Class" | Should Be "SMS_CategoryInstance"
+        $TestCategory | select -ExpandProperty "Filter" | Should Not Be ""
+        $TestCategory | select -ExpandProperty "Filter" | Should Be "LocalizedCategoryInstanceName = 'TestCategory'"
+    }
+}
+
+Describe "New-Category" {
+    
+    Mock New-CMInstance {
+        [PSCustomObject]@{CategoryInstanceName = ""; LocaleID = 0}
+    }
+
+    Mock Set-WmiInstance { 
+        [PSCustomObject]@{Class = $Class; Arguments = $Arguments}
+    }
+    
+    It "Throw if no name is supplied or type is not correct" {
+        {New-Category -Name "" -TypeName "Locale"} | Should Throw
+        {New-Category -Name "TestCategory" -TypeName "FailType"} | Should Throw
+    } 
+
+    It "Use supplied values" {
+        $TestCategory = New-Category -Name "TestCategory" -TypeName "Locale"
+
+        $TestCategory | select -ExpandProperty "Class" | Should Be "SMS_CategoryInstance"
+        $TestCategory | select -ExpandProperty "Arguments" | %{$_.LocalizedInformation} | %{$_.CategoryInstanceName} |  Should Be "TestCategory"
+        $TestCategory | select -ExpandProperty "Arguments" | %{$_.LocalizedInformation} | %{$_.LocaleID} |  Should Be "1033"
+        $TestCategory | select -ExpandProperty "Arguments" | %{$_.CategoryInstance_UniqueID} | Should match "Locale"
+        $TestCategory | select -ExpandProperty "Arguments" | %{$_.SourceSite} | Should Be "XXX"
+
+        $TestCategory = New-Category -Name "TestCategory" -TypeName "DriverCategories" -LocaleID 42
+        $TestCategory | select -ExpandProperty "Arguments" | %{$_.LocalizedInformation} | %{$_.LocaleID} |  Should Be "42"
+    }
+
+}
+
+Describe "New-DriverCategory" {
+    
+    Mock New-CMInstance {
+        [PSCustomObject]@{CategoryInstanceName = ""; LocaleID = 0}
+    }
+
+    Mock Set-WmiInstance { 
+        [PSCustomObject]@{Class = $Class; Arguments = $Arguments}
+    }
+    
+    It "Throw if no name is supplied or type is not correct" {
+        {New-Category -Name "" -TypeName "DriverCategories"} | Should Throw
+        {New-Category -Name "TestCategory" -TypeName "FailType"} | Should Throw
+    } 
+
+    It "Use supplied values" {
+        $TestCategory = New-DriverCategory -Name "TestCategory"
+
+        $TestCategory | select -ExpandProperty "Class" | Should Be "SMS_CategoryInstance"
+        $TestCategory | select -ExpandProperty "Arguments" | %{$_.LocalizedInformation} | %{$_.CategoryInstanceName} |  Should Be "TestCategory"
+        $TestCategory | select -ExpandProperty "Arguments" | %{$_.LocalizedInformation} | %{$_.LocaleID} |  Should Be "1033"
+        $TestCategory | select -ExpandProperty "Arguments" | %{$_.CategoryInstance_UniqueID} | Should match "DriverCategories"
+        $TestCategory | select -ExpandProperty "Arguments" | %{$_.SourceSite} | Should Be "XXX"
+
+        $TestCategory = New-Category -Name "TestCategory" -TypeName "DriverCategories" -LocaleID 42
+        $TestCategory | select -ExpandProperty "Arguments" | %{$_.LocalizedInformation} | %{$_.LocaleID} |  Should Be "42"
+    }
+
+}
+
+Describe "Get-Folder" {
+    
+    Mock Get-CMObject { 
+        [PSCustomObject]@{Class = $Class; Filter = $Filter}
+    }
+    
+    It "Throw if no name is supplied" {
+        {Get-Folder -Name ""} | Should Throw
+    } 
+
+    It "Return Folder by Name" {
+        $TestFolder = Get-Folder -Name "TestFolder"
+        
+        $TestFolder | select -ExpandProperty "Class" | Should Be "SMS_ObjectContainerNode"
+        $TestFolder | select -ExpandProperty "Filter" | Should Not Be ""
+        $TestFolder | select -ExpandProperty "Filter" | Should Be "Name = 'TestFolder'"
+    }
+}
+
+Describe "New-Folder" {
+    
+    Mock Set-WmiInstance { 
+        [PSCustomObject]@{Class = $Class; Arguments = $Arguments}
+    }
+    
+    It "Throw if no name is supplied or type is not correct" {
+        {New-Folder -Name "" -Type "DriverPackage"} | Should Throw
+        {New-Folder -Name "TestFolder" -Type "FailType"} | Should Throw
+    } 
+
+    It "Use supplied values" {
+        $TestFolder = New-Folder -Name "TestFolder" -Type "DriverPackage"  
+
+        $TestFolder | select -ExpandProperty "Class" | Should Be "SMS_ObjectContainerNode"
+        $TestFolder | select -ExpandProperty "Arguments" | %{$_.Name} | Should Be "TestFolder"
+        $TestFolder | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 23
+        $TestFolder | select -ExpandProperty "Arguments" | %{$_.ParentContainerNodeid} | Should Be 0
+        New-Folder -Name "TestFolder" -Type "DriverPackage" -ParentFolderID 1| select -ExpandProperty "Arguments" | %{$_.ParentContainerNodeid} | Should Be 1
+    }
+
+    It "Use correct object type" {
+
+        New-Folder -Name "TestFolder" -Type "Package" | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 2
+        New-Folder -Name "TestFolder" -Type "Advertisement" | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 3
+        New-Folder -Name "TestFolder" -Type "Query" | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 7
+        New-Folder -Name "TestFolder" -Type "Report" | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 8
+        New-Folder -Name "TestFolder" -Type "MeteredProductRule" | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 9
+        New-Folder -Name "TestFolder" -Type "ConfigurationItem" | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 11
+        New-Folder -Name "TestFolder" -Type "OperatingSystemInstallPackage" | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 14
+        New-Folder -Name "TestFolder" -Type "StateMigration" | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 17
+        New-Folder -Name "TestFolder" -Type "ImagePackage" | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 18
+        New-Folder -Name "TestFolder" -Type "BootImagePackage" | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 19
+        New-Folder -Name "TestFolder" -Type "TaskSequencePackage" | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 20
+        New-Folder -Name "TestFolder" -Type "DeviceSettingPackage" | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 21
+        New-Folder -Name "TestFolder" -Type "DriverPackage" | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 23
+        New-Folder -Name "TestFolder" -Type "Driver" | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 25
+        New-Folder -Name "TestFolder" -Type "SoftwareUpdate" | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 1011
+        New-Folder -Name "TestFolder" -Type "BaselineConfigurationItem" | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 2011
+    }
+}
