@@ -240,11 +240,16 @@ Describe "Get-CMObject" {
         $script:CMNamespace = "root\sms\Site_XXX"
 
         Mock Get-WmiObject { 
-            [PSCustomObject]@{Class = $Class; Query = $Query}
+            [PSCustomObject]@{Class = $Class; Query = $Query; Namespace = $Namespace; ComputerName = $ComputerName}
         }
 
         It "Throw if no class is supplied" {
             {Get-CMObject -Class ""} | Should Throw
+        }
+        
+        It "Use Provider connection" {
+            Get-CMObject -Class "TestClass" | select -ExpandProperty "Namespace" | Should Be "root\sms\site_XXX"
+            Get-CMObject -Class "TestClass" | select -ExpandProperty "ComputerName" | Should Be "TestProviderServer"
         } 
 
         It "Use specified values for WMI Query" {
@@ -269,7 +274,7 @@ Describe "Invoke-CMMethod" {
     Context "Connection established" {
 
         Mock Invoke-WmiMethod { 
-            [PSCustomObject]@{ReturnValue = 0; Class = $Class; Name = $Name; ArgumentList = $ArgumentList}
+            [PSCustomObject]@{ReturnValue = 0; Class = $Class; Name = $Name; ArgumentList = $ArgumentList; Namespace = $Namespace; ComputerName = $ComputerName}
         }
 
         $script:CMProviderServer = "TestProviderServer"
@@ -279,6 +284,11 @@ Describe "Invoke-CMMethod" {
         It "Throw if no class or method is supplied" {
             {Invoke-CMMethod -Class "" -Name "TestMethod"} | Should Throw
             {Invoke-CmMethod -Class "TestClass" -Name ""} | Should Throw
+        }
+        
+        It "Use Provider connection" {
+            Invoke-CMMethod -Class "TestClass" -Name "TestMethod" | select -ExpandProperty "Namespace" | Should Be "root\sms\site_XXX"
+            Invoke-CMMethod -Class "TestClass" -Name "TestMethod" | select -ExpandProperty "ComputerName" | Should Be "TestProviderServer"
         } 
 
         It "Use specified values for WMI Method invocation" {
