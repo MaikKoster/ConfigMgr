@@ -22,6 +22,8 @@ Process {
 
         }
 
+
+
     }
 
 }
@@ -33,6 +35,55 @@ Begin {
     ###############################################################################
     # Function definitions
     ###############################################################################
+
+
+    # Returns ConfigMgr Driver Package
+    function Get-DriverPackage {
+
+        [CmdletBinding()]
+        PARAM
+        (
+            # Package Name
+            [Parameter(Mandatory, ValueFromPipeline)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Name
+        )
+
+        Get-CMObject -Class SMS_DriverPackage -Filter "Name = '$Name'"
+    }
+
+    # Creates a new ConfigMgr Driver Package
+    function New-DriverPackage
+    {
+        [CmdletBinding()]
+        PARAM
+        (
+            # Package Name
+            [Parameter(Mandatory, ValueFromPipeline)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Name,
+
+            # Package Source Path
+            [Parameter(Mandatory, ValueFromPipeline)]
+            [ValidateNotNullOrEmpty()]
+            [string]$SourcePath,
+
+            # Package Description
+            [Parameter(ValueFromPipeline)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Description = ""
+
+        )
+
+        # Build the parameters for creating the driver package
+        $Arguments = @{Name = $Name; Description = $Description; PkgSourceFlag = 2; PkgSourcePath = $SourcePath}
+
+        # Create new driver package
+        $NewPackage = New-CMObject -Class SMS_DriverPackage -Arguments $Arguments
+    
+        # Return the package
+        $NewPackage
+    }
 
 
 
@@ -185,6 +236,53 @@ Begin {
 
                 }
             }
+        }
+    }
+
+    # Returns a ConfigMgr object
+    function New-CMObject {
+
+        [CmdletBinding()]
+        PARAM (
+
+            # ConfigMgr WMI provider Class
+            [Parameter(Mandatory)] 
+            [ValidateNotNullOrEmpty()]
+            [string]$Class, 
+
+            # Arguments to be supplied to the new object
+            [Parameter(Mandatory)]
+            [ValidateNotNullOrEmpty()]
+            [hashtable]$Arguments
+
+        )
+
+        if ([string]::IsNullOrWhiteSpace($Class)) { throw "Class is not specified" }
+
+        # Ensure ConfigMgr Provider information is available
+        if (Test-CMConnection) {
+
+            $ArgumentsString = ($Arguments.GetEnumerator() | foreach { "$($_.Key)=$($_.Value)" }) -join "; "
+            Write-Verbose "Create new $Class object. Arguments: $ArgumentsString"
+
+            if ($CMCredential -ne $null) {
+
+                $NewCMObject = Set-WmiInstance -Class $Class -Arguments $Arguments -ComputerName $CMProviderServer -Namespace $CMNamespace -Credential $CMCredential
+
+            } else {
+         
+                $NewCMObject = Set-WmiInstance -Class $Class -Arguments $Arguments -ComputerName $CMProviderServer -Namespace $CMNamespace
+
+            }
+
+            if ($NewCMObject -ne $null) {
+
+                # Ensure that generated properties are udpated
+                $hack = $NewCMObject.PSBase | select * | Out-Null
+
+            }
+
+            Return $NewCMObject
         }
     }
 
