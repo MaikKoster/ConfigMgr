@@ -13,6 +13,120 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . "$here\Import-Driver.ps1"
 
 
+Describe "Get-FolderHierarchy" {
+
+    Context "Default 3 Level Hierarchy" {
+
+        New-Item -ItemType Directory -Path "$TestDrive\root\OS1\Make1\Model1"
+        New-Item -ItemType Directory -Path "$TestDrive\root\OS1\Make1\Model2"
+        New-Item -ItemType Directory -Path "$TestDrive\root\OS1\Make2\Model1"
+        New-Item -ItemType Directory -Path "$TestDrive\root\OS1\Make2\Model2"
+        New-Item -ItemType Directory -Path "$TestDrive\root\OS2\Make1\Model1"
+        New-Item -ItemType Directory -Path "$TestDrive\root\OS2\Make1\Model2"
+        New-Item -ItemType Directory -Path "$TestDrive\root\OS2\Make2\Model1"
+        New-Item -ItemType Directory -Path "$TestDrive\root\OS2\Make2\Model2"
+
+        $Testpath = "$TestDrive\root"
+
+        It "Iterate through full Hierarchy" {
+
+            $Result = Get-FolderHierarchy -Path "$Testpath"
+
+            $Result.Count | Should Be 8
+            $Result[0].Name | Should Be "Model1"
+            $Result[0].Root | Should Be "$TestDrive\root"
+            $Result[0].Folders | Should Be "OS1\Make1"
+            $Result[1].Name | Should Be "Model2"
+            $Result[1].Folders | Should Be "OS1\Make1"
+            $Result[2].Name | Should Be "Model1"
+            $Result[2].Folders | Should Be "OS1\Make2"
+            $Result[3].Name | Should Be "Model2"
+            $Result[3].Folders | Should Be "OS1\Make2"
+            $Result[4].Name | Should Be "Model1"
+            $Result[4].Folders | Should Be "OS2\Make1"
+            $Result[5].Name | Should Be "Model2"
+            $Result[5].Folders | Should Be "OS2\Make1"
+            $Result[6].Name | Should Be "Model1"
+            $Result[6].Folders | Should Be "OS2\Make2"
+            $Result[7].Name | Should Be "Model2"
+            $Result[7].Folders | Should Be "OS2\Make2"
+        }
+
+        It "Iterate through first level" {
+
+            $Result = Get-FolderHierarchy -Path "$Testpath\OS1" -CurrentLevel 1
+
+            $Result.Count | Should Be 4
+            $Result[0].Name | Should Be "Model1"
+            $Result[0].Root | Should Be "$TestDrive\root"
+            $Result[0].Folders | Should Be "OS1\Make1"
+            $Result[1].Name | Should Be "Model2"
+            $Result[1].Folders | Should Be "OS1\Make1"
+            $Result[2].Name | Should Be "Model1"
+            $Result[2].Folders | Should Be "OS1\Make2"
+            $Result[3].Name | Should Be "Model2"
+            $Result[3].Folders | Should Be "OS1\Make2"
+
+        }
+
+        It "Iterate through second level" {
+
+            $Result = Get-FolderHierarchy -Path "$Testpath\OS1\Make1" -CurrentLevel 2
+
+            $Result.Count | Should Be 2
+            $Result[0].Name | Should Be "Model1"
+            $Result[0].Root | Should Be "$TestDrive\root"
+            $Result[0].Folders | Should Be "OS1\Make1"
+            $Result[1].Name | Should Be "Model2"
+            $Result[1].Folders | Should Be "OS1\Make1"
+        }
+
+        It "Leaf node" {
+
+            $Result = @(Get-FolderHierarchy -Path "$Testpath\OS1\Make1\Model2" -CurrentLevel 3)
+
+            $Result.Count | Should Be 1
+            $Result.Name | Should Be "Model2"
+            $Result.Root | Should Be "$TestDrive\root"
+            $Result.Folders | Should Be "OS1\Make1"
+
+        }
+    }
+
+    Context "1 Level Hierarchy" {
+
+        New-Item -ItemType Directory -Path "$TestDrive\root\Model1"
+        New-Item -ItemType Directory -Path "$TestDrive\root\Model2"
+
+        $Testpath = "$TestDrive\root"
+
+        It "Iterate through full Hierarchy" {
+
+            $Result = Get-FolderHierarchy -Path "$Testpath" -MaxLevel 1
+
+            $Result.Count | Should Be 2
+            $Result[0].Name | Should Be "Model1"
+            $Result[0].Root | Should Be "$TestDrive\Root"
+            $Result[0].Folders | Should Be ""
+            $Result[1].Name | Should Be "Model2"
+            $Result[1].Folders | Should Be ""
+
+        }
+
+        It "Leaf node" {
+
+            $Result = @(Get-FolderHierarchy -Path "$Testpath\Model2" -CurrentLevel 1 -MaxLevel 1)
+
+            $Result.Count | Should Be 1
+            $Result[0].Name | Should Be "Model2"
+            $Result[0].Root | Should Be "$TestDrive\root"
+            $Result[0].Folders | Should Be ""
+
+        }
+
+    }
+}
+
 Describe "New-CMConnection" {
 
     Context "No server available" {

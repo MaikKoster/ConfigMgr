@@ -1,5 +1,30 @@
 ﻿
+[CmdLetBinding()]
+PARAM (
+    
+    [Parameter(Mandatory)]
+    [ValidateScript({Test-Path $_ -PathType 'Container'})]
+    [ValidateScript({$_.StartsWith("\\")})]
+    [string]$DriverSourceRootFolder,
 
+    [Parameter(Mandatory)]
+    [ValidateScript({Test-Path $_ -PathType 'Container'})]
+    [ValidateScript({$_.StartsWith("\\")})]
+    [string]$DriverPackageRootFolder,
+
+    # The total amount of levels in the driver folder hierarchy
+    [int]$HierarchyLevels = 3,
+
+    # The current level in the driver folder hierarchy
+    [int]$CurrentHierarchyLevel = 0,
+    
+    [string]$PackageNameDelimiter = " - ",
+
+    [String]$CategoryNameDelimiter = " - "
+
+    
+
+)
 
 
 Process {
@@ -22,7 +47,22 @@ Process {
 
         }
 
+        # Evaluate Folder Hierarchy
+        $FolderHierarchy = Get-FolderHierarchy -Path $DriverSourceRootFolder -MaxLevel $HierarchyLevels -CurrentLevel $CurrentHierarchyLevel
 
+        Foreach ($Folder In $FolderHierarchy) {
+            
+            # Generate names
+            $PackageName = [string]::Join($PackageNameDelimiter, ("$Folder.Folders\$Folder.Name").Split("\"))
+            $CategoryName = [string]::Join($CategoryNameDelimiter, ("$Folder.Folders\$Folder.Name").Split("\"))
+
+            # Verify the appropriate folders are created within ConfigMgr
+            $FolderID = Verify-DriverPackageFolderStructure -Folders $Folder.Folders
+
+            # Start Import
+            Import-DriverPackageSourceFolder -DriverSourceRootFolder $Folder.Root -DriverPackageRootPath -Folders $Folder.Folders -PackageName $PackageName -CategoryName $CategoryName -CMFolderID $FolderID
+
+        }
 
     }
 
@@ -36,27 +76,100 @@ Begin {
     # Function definitions
     ###############################################################################
 
+    function Get-FolderHierarchy {
+
+        [CmdLetBinding()]
+        PARAM (
+
+            [Parameter(Mandatory,ValueFromPipeline)]
+            [System.IO.DirectoryInfo]$Path,
+
+            # Maximum amount of Hierarchy levels
+            [int]$MaxLevel = 3,
+
+            # The current Hierarchy level
+            [int]$CurrentLevel = 0
+
+        )
+
+        Process {
+
+            if ($CurrentLevel -eq $MaxLevel) {
+                # This is supposed to be the content for the driver package
+            
+                # Get Root Folder
+                $Root = $Path
+                if ($MaxLevel -gt 0) { for ($x=1; $x -le $MaxLevel; $x++) { $Root = $Root.Parent } }
+            
+                # Get Subfolders
+                $Folders = $Path.Parent.FullName.Replace("$($root.FullName)", "").Trim("\")
+            
+                # Create result
+                $Result = @{
+            
+                    Name = $path.Name
+                    Root = $Root.FullName
+                    Folders = $Folders
+            
+                } 
+
+                # Drop Result to pipeline
+                $Result
+        
+            } elseif ($CurrentLevel -gt $MaxLevel) {
+
+                Write-Error "Current level $CurrentLevel is larger than the Hierarchy Maximum level of $MaximumLevel. Aborting further processing ..." -ErrorAction Stop
+
+            } else {
+
+                # Iterate through subfolders
+                Get-ChildItem $Path.FullName -Directory | Get-FolderHierarchy -CurrentLevel ($CurrentLevel + 1) -MaxLevel $MaxLevel
+            
+            }
+
+        }
+
+    }
+
+    # Imports all drivers from the specified Source path to the specified Driver Package
+    # If the Driver package does not exist, it will be created.
     function Import-DriverPackageSourceFolder {
 
         [CmdLetBinding()]
         PARAM (
 
             # Source path of the drivers for the Driver Package
-            [DirectoryInfo]$DriverSourcePath,
+            [Parameter(Mandatory)]
+            [string]$DriverSourceRootFolder,
 
-            # Source path of the package it needs to be created
-            [DirectoryInfo]$PackageSourcePath,
+            # Source path of the package
+            [Parameter(Mandatory)]
+            [string]$DriverPackageRootFolder,
+
+            # Current Subfolder structure
+            [Parameter(Mandatory)]
+            [string]$Folders,
 
             # Package name
+            [Parameter(Mandatory)]
             [string]$PackageName,
 
             # Category name
+            [Parameter(Mandatory)]
             [string]$CategoryName,
+
+            # ConfigMgr Folder for the Driver Package
+            [Parameter(Mandatory)]
+            [uint32]$FolderID,
 
             # Cleanup content if new package path already exists
             [switch]$Cleanup
 
         )
+
+        #
+        $DriverSourcePath = Join-Path -Path $DriverSourceRootFolder -ChildPath $Folders
+        $PackageSourcePath = Join-Path -Path $DriverPackageRootFolder -ChildPath $Folders
 
         # Process this folder only if there are any changes
         $PackageHash = Get-FolderHash $DriverSourcePath.FullName
@@ -69,7 +182,7 @@ Begin {
 
             # Get Driver Package
             # TODO: Add logic for same package name in different folders
-            $DriverPackage = Get-DriverPackage -Name $PackageName
+            $DriverPackage = Get-DriverPackage -Name $PackageName -ParentFolderID $FolderID
 
             # Create the package if it doesn't already exist
             if ($DriverPackage -eq $null) {
@@ -79,7 +192,7 @@ Begin {
 					if ($cleanup) {
 
 					    Write-Verbose "Folder already exists, removing content"
-    				    dir $driverPackageSource | remove-item -recurse -force
+    				    dir $DriverPackageSource | Remove-Item -recurse -force
 
 					} else {
 
@@ -89,13 +202,13 @@ Begin {
 
 				} else {
 
-                    $null = MkDir "$DriverPackageSource"
+                    MkDir "$DriverPackageSource" | Out-Null
 
                 }
 
                 $DriverPackage = New-DriverPackage -Name "$Name" -SourcePath $DriverPackageSource
 
-                #Move-CMObject -TargetFolderID $folderID -ObjectID $CMPackage.PackageID -ObjectType 23
+                Move-CMObject -TargetFolderID $FolderID -ObjectID $DriverPackage.PackageID
 
                 Write-Host "Created driver package $($DriverPackage.PackageID)"
 
@@ -108,55 +221,19 @@ Begin {
             # Get current list of drivers
             $PackageID = $DriverPackage.PackageID
             $CurrentDrivers = Get-Driver -PackageID $PackageID
-            $VerifiedDrivers = @()
 
-            # Import all Drivers from the Driver Source
-            Get-ChildItem $DriverSourcePath.FullName -Filter *.inf -Recurse | Import-Driver -CategoryName $CategoryName | % {
+            # Import all Drivers from the Driver Source and add to driver package
+            $NewDrivers = Get-ChildItem $DriverSourcePath.FullName -Filter *.inf -Recurse | Import-Driver -CategoryName $CategoryName | Add-DriverToDriverPackage -Package $DriverPackage
 
-                # Add the driver to the driver package if necessary
-                $DriverUniqueID = $_.CI_UniqueID
-                $DriverName = $_.LocalizedDisplayName
-                $DriverExistS = $CurrentDrivers | ? {$_.CI_UniqueID -eq $DriverUniqueID}
+            # Remove all drivers that are now longer available in the Driver source from the package and adjust the category 
+            $RemovedDrivers = $CurrentDrivers | Where { $NewDrivers -notcontains $_ }  | Remove-DriverFromDriverPackage -Package $DriverPackage
 
-                if ($DriverExistS -eq $null) {
+            # Remove all Drivers from the Driver pool that have no category anymore, assuming they don't belong to any package now.
+            $RemovedDrivers | Where { $_.CategoryInstance_UniqueIDs -eq $null } | Remove-Driver
 
-                    # Add the driver to the package since it's not already there
-                    Write-Host "Adding driver $DriverName to package $($DriverPackage.Name)"
-                    $null = Add-DriverToDriverPackage -Package $DriverPackage -Driver $_
-
-                } else {
-
-                    # Add driver to list of drivers still valid for that package
-                    Write-Host "Driver $driverName is already in package $($driverPackage.Name)"
-                    $VerifiedDrivers += $_
-
-                }
-
-            }
-
-            # Enumerate all former drivers from the driver package and check if they are still available in the source
-            foreach ($Driver in $CurrentDrivers) {
-
-                $DriverVerified = $VerifiedDrivers | ? {$_.CI_UniqueID -eq $Driver.CI_UniqueID}
-
-                if ($DriverVerified -eq $null) {
-
-                    # Remove Driver from package
-                    Write-Host "Driver $($driver.LocalizedDisplayName) is no longer available in the source for package $($driverPackage.Name)"
-
-                    Remove-DriverFromDriverPackage -DriverPackage $DriverPackage -Driver $Driver
-
-                    # Remove Category from Driver
-                    if ($category -eq $null) { $category = GetCategory $categoryName }
-
-                    Remove-CategoryFromDriver -Driver $Driver -Category 
-
-                    # Verify ContentSourcePath
-
-                }
-
-            }
-
+            # Try to update ContentSourcePath of removed drivers that are in other driver packages, if it is pointing to the current package path
+            # If it can't be updated the "BrokenContentSourcePath" category will be added
+            $RemovedDrivers | Where { ($_.CategoryInstance_UniqueIDs -ne $null) -and ($_.DriverContentSourcePath -like "*$Folders\$PackageName*") } | Update-DriverContentSourcePath -DriverSourceRootFolder $DriverSourceRootFolder 
 
             # Update hash file
             Get-ChildItem $DriverSourcePath.FullName -Filter "*.hash"  | Remove-Item 
@@ -181,7 +258,11 @@ Begin {
             # Package Name
             [Parameter(Mandatory, ParameterSetName="Name")]
             [ValidateNotNullOrEmpty()]
-            [string]$Name
+            [string]$Name,
+
+            #ParentFolderID
+            [Parameter(ParameterSetName="Name")]
+            [uint32]$ParentFolderID = 0
 
         )
 
@@ -191,7 +272,16 @@ Begin {
 
         } elseif (![string]::IsNullOrEmpty($Name)) {
 
-            Get-CMObject -Class SMS_DriverPackage -Filter "Name = '$Name'"
+            
+            if ($ParentFolderID -gt 0) {
+
+                Get-CMObject -Class SMS_DriverPackage -Filter "Name = '$Name' AND PackageID IN (SELECT InstanceKey FROM SMS_ObjectContainerItem WHERE ContainerNodeID = $ParentFolderID)"
+            
+            } else {
+
+                Get-CMObject -Class SMS_DriverPackage -Filter "Name = '$Name'"
+
+            }
 
         }
 
@@ -225,8 +315,11 @@ Begin {
         # Create new driver package
         $NewPackage = New-CMObject -Class SMS_DriverPackage -Arguments $Arguments
     
+        Write-Verbose "Created new Driver Package $($NewPackage.Name) ($($NewPackage.PackageID))"
+
         # Return the package
         $NewPackage
+
     }
 
     # Returns the drivers
@@ -235,12 +328,13 @@ Begin {
         [CmdletBinding()]
         PARAM
         (
-            # Driver Package
+
+            # Driver PackageID
             [Parameter(Mandatory,ParameterSetName="PackageID")]
             [ValidateNotNullOrEmpty()]
             [string]$PackageID,
 
-            # Driver Package
+            # Driver Unique ID
             [Parameter(Mandatory,ParameterSetName="UniqueID")]
             [ValidateNotNullOrEmpty()]
             [string]$UniqueID
@@ -258,6 +352,28 @@ Begin {
         }
     }
 
+    # Removes a Driver from the Configuration Manager Driver Store
+    function Remove-Driver {
+
+        [CmdletBinding(SupportsShouldProcess)]
+        PARAM
+        (
+            [Parameter(Mandatory,ValueFromPipeline)]
+            [System.Management.ManagementObject]$Driver
+
+        )
+
+        Process {
+
+            Write-Verbose "Removing Driver $($Driver.LocalizedDisplayName) from Driver Store."
+            if ($PSCmdlet.ShouldProcess("Driver $($Driver.LocalizedDisplayName)", "Remove Driver")) {
+                         
+                $Driver.Delete() | Out-Null
+
+            }
+            
+        }
+    }
 
     # Imports the specified driver into ConfigMgr
     function Import-Driver
@@ -273,13 +389,9 @@ Begin {
 
         )
 
-        Process
-        {
-            # Split the path
-            $DriverINF = split-path $infFile -leaf 
-            $DriverPath = split-path $infFile
+        Begin {
 
-            # Get the category if specified
+             # Get the category if specified
             if ([string]::IsNullOrEmpty($CategoryName)) {
 
                 Write-Verbose "No driver category specified"
@@ -296,7 +408,16 @@ Begin {
                 }
 
                 $CategoryID = $DriverCategory.CategoryInstance_UniqueID
+
             }
+
+        }
+
+        Process
+        {
+            # Split the path
+            $DriverINF = split-path $infFile -leaf 
+            $DriverPath = split-path $infFile
 
             try {
 
@@ -314,7 +435,7 @@ Begin {
                 $localizedSetting.Description = ""
                 [System.Management.ManagementObject[]] $ocalizedSettings += $localizedSetting
 
-                # Prepare needed properties
+                # Prepare driver properties
                 $Arguments = @{
                     SDMPackageXML = $Result.Driver.SDMPackageXML
                     ContentSourcePath = $Result.Driver.ContentSourcePath
@@ -322,15 +443,13 @@ Begin {
                     LocalizedInformation = @($LocalizedSettings)
                 }
 
-                if ($CategoryID -ne $null) {
-
-                    $Arguments | Add-Member -MemberType NoteProperty -Name CategoryInstance_UniqueIDs -Value @($CategoryID)
-                }
+                # Add Category if available 
+                if (![string]::IsNullOrEmpty($CategoryID)) { $Arguments | Add-Member -MemberType NoteProperty -Name CategoryInstance_UniqueIDs -Value @($CategoryID) }
 
                 # Create new Driver 
                 $Driver = New-CMObject -Class SMS_Driver -Arguments $Arguments
         
-                Write-Verbose "Added new driver."
+                Write-Verbose "Added new driver $($Driver.LocalizedDisplayname)."
 
             } catch [System.Management.Automation.MethodInvocationException] {
                 
@@ -345,31 +464,31 @@ Begin {
                     $Driver = Get-Driver -UniqueID $CIUniqueID
                         
                     # Set the category
-                    if ($CategoryID -ne $null) {
-                        if (-not $Driver) {
+                    if (![string]::IsNullOrEmpty($CategoryID)) {
+                        if ($Driver -eq $null) {
 
                             Write-Warning "Unable to import and no existing driver found."
                             return
 
                         } elseif ($Driver.CategoryInstance_UniqueIDs -contains $CategoryID) {
 
-                            Write-Verbose "Existing driver is already in the specified category."
+                            Write-Verbose "Existing driver $($Driver.LocalizedDisplayname) is already in the specified category $($Category.LocalizedCategoryInstanceName)."
 
                         } else {
 
                             $Driver.CategoryInstance_UniqueIDs += $CategoryID
-                            $null = $Driver.Put()
-                            Write-Verbose "Added category on existing driver."
+                            $Driver.Put() | Out-Null
+                            Write-Verbose "Added category $($Category.LocalizedCategoryInstanceName) on existing driver $($Driver.LocalizedDisplayname)."
 
                         }
                     }
 
                     # Check if ContentSourcePath is still valid
-                    if (-not (Test-Path($driver.ContentSourcePath))) {
+                    if (!(Test-Path($Driver.ContentSourcePath))) {
 
-                        Write-Verbose "Existing driver path ""$($driver.ContentSourcePath)"" isn't valid. Updating with current driver path."
-                        $Driver.ContentSourcePath = $driverPath
-                        $null = $Driver.Put()
+                        Write-Verbose "Existing driver path ""$($Driver.ContentSourcePath)"" isn't valid. Updating with current driver path."
+                        $Driver.ContentSourcePath = $DriverPath
+                        $Driver.Put() | Out-Null
 
                     }
 
@@ -381,10 +500,7 @@ Begin {
                 }
             }
 
-            # Hack - for some reason without this we don't get the CollectionID value
-            #$hack = $driver.PSBase | select * | out-null
-
-            # Write the driver object to the pipeline
+            # Write the driver object back to the pipeline
             $Driver
         }
 
@@ -397,93 +513,106 @@ Begin {
         [CmdletBinding()]
         PARAM
         (
+        
+            # ConfigMgr Driver
+            [Parameter(Mandatory, ValueFromPipeline)]
+            [System.Management.ManagementObject]$Driver,
+
             # ConfigMgr Driver Package
             [Parameter(Mandatory)]
-            [System.Management.ManagementObject]$Package,
+            [System.Management.ManagementObject]$Package
 
-            # ConfigMgr Driver
-            [Parameter(Mandatory)]
-            [System.Management.ManagementObject] $Driver
         )
 
-        # Get the list of content IDs
-        $IdList = @()
-        $CIID = $Driver.CI_ID
+        Begin {
 
-        $IDs = Get-CMObject -Class SMS_CIToContent -Filter "CI_ID = '$CIID'"
-
-        if ($ids -eq $null) {
-
-            Write-Warning "Driver not found in SMS_CIToContent"
-
-        } else {
-
-            foreach ($id in $ids) {
-
-                $IdList += $id.ContentID
-
-            }
-
-            # Build a list of content source paths (one entry in the array)
-            $Sources = @($Driver.ContentSourcePath)
-
-            # Invoke the method
-            try {
-
-                $Package.AddDriverContent($IdList, $Sources, $false)
-
-            } catch [System.Management.Automation.MethodInvocationException] {
-                $exc = $_.Exception.GetBaseException()
-
-                if ($exc.ErrorInformation.ErrorCode -eq 1078462229) {
-
-                    Write-Verbose "Driver is already in the driver package (possibly because there are multiple INFs in the same folder or the driver already was added from a different location): $($exc.ErrorInformation.Description)"
-
-                }
-
-            }
+            # Get current list of drivers for the Package
+            # to only add drivers that aren't available yet
+            $PackageID = $Package.PackageID
+            $CurrentDrivers = Get-Driver -PackageID $PackageID
 
         }
 
+        Process {
+
+            if ($CurrentDrivers -notcontains $Driver) {
+
+                Write-Verbose "Adding driver $($Driver.LocalizedDisplayName) to package $($Package.Name)"
+                
+                # Get the list of content IDs
+                $ContentIDs = @(Get-CMObject -Class SMS_CIToContent -Filter "CI_ID = '$($Driver.CI_ID)'" | select -ExpandProperty ContentID)
+
+                if (($ContentIDs -ne $null) -and ($ContentIDs.Count -gt 0)) {
+
+                    # Build a list of content source paths (one entry in the array)
+                    $Sources = @($Driver.ContentSourcePath)
+
+                    # Invoke the method
+                    try {
+
+                        $Package.AddDriverContent($ContentIDs, $Sources, $false)
+
+                    } catch [System.Management.Automation.MethodInvocationException] {
+
+                        $exc = $_.Exception.GetBaseException()
+
+                        if ($exc.ErrorInformation.ErrorCode -eq 1078462229) {
+
+                            Write-Verbose "Driver is already in the driver package (possibly because there are multiple INFs in the same folder or the driver already was added from a different location): $($exc.ErrorInformation.Description)"
+
+                        }
+
+                    }
+
+                } else {
+
+                    Write-Warning "Driver not found in SMS_CIToContent"
+
+                }
+
+            } else {
+
+                Write-Verbose "Driver $($Driver.LocalizedDisplayName) is already available in package $($Package.Name)"
+
+            }
+
+            # Write the Driver object back to the pipeline
+            $Driver
+
+        }
+        
     }
 
+    # Removes a Driver from the Driver Package
     function Remove-DriverFromDriverPackage {
 
         [CmdLetBinding()]
         PARAM (
 
-            [Parameter(Mandatory)]
-            $DriverPackage,
-
             [Parameter(Mandatory, ValueFromPipeline)]
-            $Driver
+            $Driver,
+
+            [Parameter(Mandatory)]
+            $Package
+            
         )
 
         Process {
 
-            $DriverCIID = $Driver.CI_ID
+            $ContentIDs = Get-CMObject -Class SMS_CIToContent -Filter "CI_ID = '$($Driver.CI_ID)'" | select -ExpandProperty ContentID
 
-            $DriverContent = @(Get-CMObject -Class SMS_CIToContent -Filter "CI_ID = '$DriverCIID'")
-            if ($DriverContent -eq $null) {
+            if (($ContentIDs -ne $null) -and ($ContentIDs.Count -gt 0)) {
 
-                Write-Warning "Warning: Driver not found in SMS_CIToContent"
+                Write-Verbose "Removing driver $($Driver.LocalizedDisplayName) from Driver package $($Package.Name)"
+                $DriverPackage.RemoveDriverContent($ContentIDs, $false)
 
             } else {
                     
-                $IDs = @()
-
-                foreach ($CI in $DriverContent) {
-                    $IDs += $CI.ContentID    
-                }
-
-                if ($IDs -ne $null) {
-
-                    Write-Verbose "Removing driver from Driver package"
-                    $DriverPackage.RemoveDriverContent($IDs, $false)
-
-                }
-
+                Write-Warning "Driver $($Driver.LocalizedDisplayName) ($($Driver.CI_ID)) not found in SMS_CIToContent"
             }
+
+            # Write the Driver object back to the pipeline
+            $Driver
 
         }
 
@@ -497,20 +626,29 @@ Begin {
         
         [CmdLetBinding(SupportsShouldProcess)]
         PARAM(
-            [Parameter(Mandatory)]
+            [Parameter(Mandatory,ValueFromPipeline)]
             [ValidateNotNullOrEmpty()]
             $Driver,
 
-            [DirectoryInfo]$DriverSourcePath
+            [string]$DriverSourceRootFolder
         )
 
+        Begin {
 
-        # Check if driver points to current SourcePath
-        # If not, it's a duplicate from a different package then no cleanup is necessary
-        $DriverSourcePathName = $SourcePath.FullName
-        if ($driver.ContentSourcePath -like "*$DriverSourcePathName*") {
+            $BrokenCategory = Get-Category -Name "BrokenContentSourcePath"
+                
+            if ($BrokenCategory -eq $null) { $BrokenCategory = New-DriverCategory -Name "BrokenContentSourcePath" }
 
-            Write-Verbose "Driver ContentSourcePath has been removed. Searching for other possible content."
+            $BrokenCategoryID = $BrokenCategory.CategoryInstance_UniqueID
+
+        }
+
+        Process {
+
+            # Check if driver points to current SourcePath
+            # If not, it's a duplicate from a different package then no cleanup is necessary
+
+            Write-Verbose "Driver ContentSourcePath has been removed. Searching for duplicate driver in $($DriverSourceRootFolder.Fullname)."
             $UpdatedContentSourcePath = $false
 
             # Driver Content Source path was from this package
@@ -519,7 +657,7 @@ Begin {
             $NewPathFound = $false
             $InfFile = $Driver.DriverInfFile
 
-            $PossibleInfFiles = Get-ChildItem "$($DriverSourcePath.FullName)" -Filter "$InfFile)" -recurse
+            $PossibleInfFiles = Get-ChildItem "$DriverSourceRootFolder" -Filter "$InfFile)" -recurse
             foreach ($infFile in $PossibleInfFiles) {
             
                 # Import each driver and see if the Unique ID matches
@@ -529,8 +667,9 @@ Begin {
                     
                     # Found a different path for the same driver
                     # Update ContentSourcePath
+                    Write-Verbose "Found alternative ContentSourcePath ""$($_.Parent.FullName)"" and updating Driver $($Driver.LocalizedDisplayname)."
                     $Driver.ContentSourcePath = $_.Parent.FullName
-                    $Driver.Put()
+                    $Driver.Put() | Out-Null
 
                     $NewPathFound = $true
                     break
@@ -538,52 +677,32 @@ Begin {
                 }
 
             }
-
             
             if (!$NewPathFound) {
 
                 # Add "BrokenContenSourcePath" category to Driver
-                $Broken = Get-Category -Name "BrokenContentSourcePath"
-                
-                if ($Broken -eq $null) {
-
-                    $Broken = New-DriverCategory -Name "BrokenContentSourcePath"
-
-                }
-   
-                $BrokenID = $Broken.CategoryInstance_UniqueID
-
-                if ($Driver.CategoryInstance_UniqueIDs -notcontains $BrokenID) {
+                if ($Driver.CategoryInstance_UniqueIDs -notcontains $BrokenCategoryID) {
                                 
-                    $Driver.CategoryInstance_UniqueIDs += $BrokenID
-                    $null = $Driver.Put()
-                    Write-Host "Added category ""BrokenContentSourcePath"" on driver."
+                    Write-Warning "ContentSourcePath no longer valid for Driver $($Driver.LocalizedDisplayName). Adding Category ""BrokenContentSourcePath""."
+                    $Driver.CategoryInstance_UniqueIDs += $BrokenCategoryID
+                    $Driver.Put() | Out-Null
 
                 }
 
             } else {
 
                 # Remove "BrokenContentSourcePath" Category if necessary
-                $Broken = Get-Category -Name "BrokenContentSourcePath"
-                
-                if ($Broken -ne $null) {
-
-                    $BrokenID = $Broken.CategoryInstance_UniqueID
-
-                    if ($Driver.CategoryInstance_UniqueIDs -contains $BrokenID) {
-                                
-                        $Driver.CategoryInstance_UniqueIDs -= $BrokenID
-                        $null = $Driver.Put()
-                        Write-Host "Removed category ""BrokenContentSourcePath"" on driver."
-
-                    }
+                if ($Driver.CategoryInstance_UniqueIDs -contains $BrokenID) {
+                            
+                    Write-Verbose "ContentSourcePath for Driver $($Driver.LocalizedDisplayName) was updated. Removing Category ""BrokenContentSourcePath""."
+                    $Driver.CategoryInstance_UniqueIDs -= $BrokenID
+                    $Driver.Put() | Out-Null
 
                 }
                 
             }
 
         }
-
     }
 
     # Returns a ConfigMgr Category
@@ -658,7 +777,7 @@ Begin {
         [CmdLetBinding(SupportsShouldProcess)]
         PARAM(
             
-            [Parameter(Mandatory)]
+            [Parameter(Mandatory, ValueFromPipeline)]
             [ValidateNotNullOrEmpty()]
             $Driver,
 
@@ -667,26 +786,28 @@ Begin {
             $Category
         )
 
+        Begin {
 
-        Write-Verbose "Removing category ""$($Category.LocalizedCategoryInstanceName)"" (""$($Category.CategoryInstance_UniqueID)"")"
-
-        $UpdatedCategories = @($Driver.CategoryInstance_UniqueIDs | ? {$_ -ne $Category.CategoryInstance_UniqueID})
-                    
-        if ($UpdatedCategories -eq $null) {
-
-            Write-Host "Drive has no category left. Remove from Driver Store."
-            if ($PSCmdlet.ShouldProcess("Driver $($Driver.LocalizedDisplayName)", "Remove Driver")) {             
-                $Driver.Delete()
-            }
-
-        } else {
             
+
+        }
+
+
+        Process {
+
+            Write-Verbose "Removing category $($Category.LocalizedCategoryInstanceName) from Driver $($Driver.LocalizedDisplayname)"
+
+            $UpdatedCategories = @($Driver.CategoryInstance_UniqueIDs | Where {$_ -ne $Category.CategoryInstance_UniqueID})
+
             if ($PSCmdlet.ShouldProcess("Driver $($Driver.LocalizedDisplayName)", "Remove Category $($Category.LocalizedCategoryInstanceName)")) {             
 
                 $Driver.CategoryInstance_UniqueIDs = $UpdatedCategories
-                $Driver.Put()
+                $Driver.Put() | Out-Null
 
             }
+
+            # Write the Driver object back to the pipeline
+            $Driver
 
         }
 
@@ -698,15 +819,61 @@ Begin {
         [CmdletBinding()]
         PARAM
         (
-            # Category Name
-            [Parameter(Mandatory, ValueFromPipeline)]
+
+            # Folder ID
+            [Parameter(Mandatory, ParameterSetName="ID")]
+            [uint32]$ID,
+
+            # Folder Name
+            [Parameter(Mandatory, ParameterSetName="Name")]
             [ValidateNotNullOrEmpty()]
-            [string]$Name
+            [string]$Name,
+
+            # Folder type
+            [Parameter(Mandatory, ParameterSetName="Name")]
+            [ValidateSet("Package", "Advertisement", "Query", "Report", "MeteredProductRule", "ConfigurationItem", "OSInstallPackage", "StateMigration", "ImagePackage", "BootImagePackage", "TaskSequencePackage", "DeviceSettingPackage", "DriverPackage", "Driver", "SoftwareUpdate", "ConfigurationBaseline", "DeviceCollection", "UserCollectioN")]
+            [string]$Type,
+
+            # ParentID
+            [Parameter(ParameterSetName="Name")]
+            [uint32]$ParentFolderID = 0
         )
 
-        Get-CMObject -Class SMS_ObjectContainerNode -Filter "Name = '$Name'"
+        switch ($Type) {
+
+            "Package" {$TypeID = 2}
+            "Advertisement" {$TypeID = 3}
+            "Query" {$TypeID = 7}
+            "Report" {$TypeID = 8}
+            "MeteredProductRule" {$TypeID = 9}
+            "ConfigurationItem" {$TypeID = 11}
+            "OSInstallPackage" {$TypeID = 14}
+            "StateMigratino" {$TypeID = 17}
+            "ImagePackage" {$TypeID = 18}
+            "BootImagePackage" {$TypeID = 19}
+            "TaskSequencePackage" {$TypeID = 20}
+            "DeviceSettingPackage" {$TypeID = 21}
+            "DriverPackage" {$TypeID = 23}
+            "Driver" {$TypeID = 25}
+            "SoftwareUpdate" {$TypeID = 1011}
+            "ConfigurationBaseline" {$TypeID = 2011}
+            "DeviceCollection" {$TypeID = 5000}
+            "UserCollection" {$TypeID = 5001}
+            default {Throw "Unsupported Folder Type"}
+        }
+
+        if ([string]::IsNullOrEmpty($Name)) {
+
+            Get-CMObject -Class SMS_ObjectContainerNode -Filter "((Name = '$Name') AND (ObjectType=$TypeID) AND (ParentContainerNodeID = $ParentFolderID))"
+
+        } else {
+
+            Get-CMObject -Class SMS_ObjectContainerNode -Filter "ContainerNodeID = $ID"
+
+        }
     }
 
+    
     # Ceates a new ConfigMgr Folder
     function New-Folder {
 
@@ -720,7 +887,7 @@ Begin {
 
             # Type of object to place in the console folder
             [Parameter(Mandatory, ValueFromPipeline)]
-            [ValidateSet("Package", "Advertisement", "Query", "Report", "MeteredProductRule", "ConfigurationItem", "OperatingSystemInstallPackage", "StateMigration", "ImagePackage", "BootImagePackage", "TaskSequencePackage", "DeviceSettingPackage", "DriverPackage", "Driver", "SoftwareUpdate", "BaselineConfigurationItem")]
+            [ValidateSet("Package", "Advertisement", "Query", "Report", "MeteredProductRule", "ConfigurationItem", "OSInstallPackage", "StateMigration", "ImagePackage", "BootImagePackage", "TaskSequencePackage", "DeviceSettingPackage", "DriverPackage", "Driver", "SoftwareUpdate", "ConfigurationBaseline", "DeviceCollection", "UserCollectioN")]
             [string]$Type,
 
             # The unique ID of the parent folder. 
@@ -730,23 +897,27 @@ Begin {
         )
 
         Switch ($Type) {
-            "Package" {$ObjectType = 2}
-            "Advertisement" {$ObjectType = 3}
-            "Query" {$ObjectType = 7}
-            "Report" {$ObjectType = 8}
-            "MeteredProductRule" {$ObjectType = 9}
-            "ConfigurationItem" {$ObjectType = 11}
-            "OperatingSystemInstallPackage" {$ObjectType = 14}
-            "StateMigration" {$ObjectType = 17}
-            "ImagePackage" {$ObjectType = 18}
-            "BootImagePackage" {$ObjectType = 19}
-            "TaskSequencePackage" {$ObjectType = 20}
-            "DeviceSettingPackage" {$ObjectType = 21}
-            "DriverPackage" {$ObjectType = 23}
-            "Driver" {$ObjectType = 25}
-            "SoftwareUpdate" {$ObjectType = 1011}
-            "BaselineConfigurationItem" {$ObjectType = 2011}
-            default {Throw "Unknown ObjectType $Type"}
+
+            "Package" {$TypeID = 2}
+            "Advertisement" {$TypeID = 3}
+            "Query" {$TypeID = 7}
+            "Report" {$TypeID = 8}
+            "MeteredProductRule" {$TypeID = 9}
+            "ConfigurationItem" {$TypeID = 11}
+            "OSInstallPackage" {$TypeID = 14}
+            "StateMigratino" {$TypeID = 17}
+            "ImagePackage" {$TypeID = 18}
+            "BootImagePackage" {$TypeID = 19}
+            "TaskSequencePackage" {$TypeID = 20}
+            "DeviceSettingPackage" {$TypeID = 21}
+            "DriverPackage" {$TypeID = 23}
+            "Driver" {$TypeID = 25}
+            "SoftwareUpdate" {$TypeID = 1011}
+            "ConfigurationBaseline" {$TypeID = 2011}
+            "DeviceCollection" {$TypeID = 5000}
+            "UserCollection" {$TypeID = 5001}
+
+            default {Throw "Unsupported Folder Type"}
         }
 
         $Arguments = @{Name = $Name; ObjectType = $ObjectType; ParentContainerNodeid = $ParentFolderID}
@@ -754,8 +925,38 @@ Begin {
         New-CMObject -Class SMS_ObjectContainerNode -Arguments $Arguments
     }
 
+    # Verifies that the supplied Driver Package Folder structure is created and returns the ID of the leaf node folder
+    function Verify-DriverPackageFolderStructure {
+
+        [CmdLetBinding()]
+        PARAM (
+
+            [Parameter(Mandatory)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Folders
+
+        )
+
+        $ParentID = 0
+        foreach ($FolderName In $Folders.Split("\")) {
+
+            $CMFolder = Get-Folder -Name $FolderName -Type DriverPackage -ParentID $ParentID
+
+            if ($CMFolder -eq $null) {
+
+                $CMFolder = New-Folder -Name $FolderName -Type DriverPackage -ParentFolderID $ParentID
+
+            }
+
+            $ParentID = $CMFolder.ContainerNodeID
+
+        }
+
+        Return $ParentID
+    }
+
     # Generates a Hash value for the specified File
-    Function Get-ContentHash {
+    function Get-ContentHash {
 
         [CmdLetBinding()]
         Param (
@@ -772,12 +973,14 @@ Begin {
         $algo = [type]"System.Security.Cryptography.md5"
 	    $crypto = $algo::Create()
         $hash = [BitConverter]::ToString($crypto.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($content))).Replace("-", "")
+
         $hash
+
     }
 
     # Generates a Hash value for the specified folder
     # Used to detect changes
-    Function Get-FolderHash {
+    function Get-FolderHash {
         
         [CmdLetBinding()]
         Param (
@@ -797,6 +1000,7 @@ Begin {
 	    $hash = [BitConverter]::ToString($crypto.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($content))).Replace("-", "")
     
         $hash
+
     }
 
     ###############################################################################
@@ -1094,7 +1298,53 @@ Begin {
                 Return $Result
 
             }
+
         }
+
+    }
+
+    # Moves a ConfigMgr Object to a different Folder
+    Function Move-CMObject {            
+        
+        [CmdLetBinding()]
+        PARAM (
+            [Parameter(Mandatory)]        
+            [uint32]$SourceFolderID,
+            
+            [Parameter(Mandatory)]
+            [uint32]$TargetFolderID,
+
+            [Parameter(Mandatory)]
+            [string[]]$ObjectID,
+
+            [Parameter(Mandatory)]
+            [string]$ObjectType           
+        )
+        
+        # Verify Folders exist
+        $SourceFolder = Get-Folder -ID $SourceFolderID
+        $TargetFolder = Get-Folder -ID $TargetFolderID
+
+        if (($SourceFolder -ne $null) -and ($TargetFolder -ne $null)) {
+            
+            # Verify folders have the same ObjectType
+            if ($SourceFolder.ObjectType -eq $TargetFolder.ObjectType) {
+
+                $Arguments = @($SourceFolderID, $ObjectID, $TargetFolder.ObjectType, $TargetFolderID)
+
+                $Result = Invoke-CMMethod -Class SMS_ObjectContainerItem -Name MoveMembers -ArgumentList $Arguments
+                
+            } else {
+
+                Write-Warning "Unable to move object $ObjectID. SourceFolder $SourceFolderID ObjectType $($SourceFolder.ObjectType) and TargetFolder $TargetFolderID ObjectType $($TargetFolder.ObjectType) don't match."
+
+            }
+
+        } else {
+
+            Write-Warning "Unable to move object $ObjectID. SourceFolder $SourceFolderID or TargetFolder $TargetFolderID are not available."
+        }
+          
     }
 
 }
