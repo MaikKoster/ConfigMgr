@@ -1,5 +1,33 @@
-﻿
-[CmdLetBinding()]
+﻿#Requires -Version 3.0
+
+<#
+    .SYNOPSIS
+        Imports Drivers into SCCM
+
+    .DESCRIPTION 
+        Imports a complete Driver hierarchy into System Center Configuration Manager.
+        Driver Packages will be created automatically.
+        The import is executed as a full sync, so new drivers will be added, but drivers missing
+        from the source will also be removed. Categories and the ContentSourcePath will be 
+        updated automatically. 
+        Removed drivers that no longer have any category will be removed from the drivers store as well.
+
+    .LINK
+        http://maikkoster.com/
+
+    .NOTES
+        Copyright (c) 2015 Maik Koster
+
+        Author:  Maik Koster
+        Version: 1.0
+        Date:    10.12.2015
+
+        Version History:
+            1.0 - 10.12.2015 - Published script
+            
+
+#>
+[CmdLetBinding(SupportsShouldProcess)]
 PARAM (
     
     [Parameter(Mandatory)]
@@ -18,12 +46,26 @@ PARAM (
     # The current level in the driver folder hierarchy
     [int]$CurrentHierarchyLevel = 0,
     
+    # The delimiter used when the package name is generated based on the folder structure 
     [string]$PackageNameDelimiter = " - ",
 
-    [String]$CategoryNameDelimiter = " - "
+    # The delimiter used when the category name is generated based on the folder structure 
+    [String]$CategoryNameDelimiter = " - ",
 
-    
+    # If set no Driver Package folders will be created in ConfigMgr.
+    [switch]$DontCreateDriverPackageFolders,
 
+    # The ConfigMgr Provider Server name. 
+    # If no value is specified, the script assumes to be executed on the Site Server.
+    [Alias("SiteServer", "ServerName")]
+    [string]$ProviderServer = ".",
+
+    # The ConfigMgr provider Site Code. 
+    # If no value is specified, the script will evaluate it from the Site Server.
+    [string]$SiteCode,
+
+    # Credentials to connect to the Provider Server.
+    [System.Management.Automation.CredentialAttribute()]$Credential   
 )
 
 
@@ -57,10 +99,17 @@ Process {
             $CategoryName = [string]::Join($CategoryNameDelimiter, ("$Folder.Folders\$Folder.Name").Split("\"))
 
             # Verify the appropriate folders are created within ConfigMgr
-            $FolderID = Verify-DriverPackageFolderStructure -Folders $Folder.Folders
+            if (!($DontCreateDriverPackageFolders.IsPresent)) {
+
+                $FolderID = Verify-DriverPackageFolderStructure -Folders $Folder.Folders
+
+            } else {
+
+                $FolderID = 0
+            }
 
             # Start Import
-            Import-DriverPackageSourceFolder -DriverSourceRootFolder $Folder.Root -DriverPackageRootPath -Folders $Folder.Folders -PackageName $PackageName -CategoryName $CategoryName -CMFolderID $FolderID
+            Import-DriverPackageSourceFolder -DriverSourceRootFolder $Folder.Root -DriverPackageRootPath -Folders $Folder.Folders -PackageName $PackageName -CategoryName $CategoryName -FolderID $FolderID
 
         }
 
@@ -208,7 +257,8 @@ Begin {
 
                 $DriverPackage = New-DriverPackage -Name "$Name" -SourcePath $DriverPackageSource
 
-                Move-CMObject -TargetFolderID $FolderID -ObjectID $DriverPackage.PackageID
+                # Move to correct folder if required
+                if ($FolderID -gt 0) { Move-CMObject -TargetFolderID $FolderID -ObjectID $DriverPackage.PackageID }
 
                 Write-Host "Created driver package $($DriverPackage.PackageID)"
 
@@ -228,12 +278,13 @@ Begin {
             # Remove all drivers that are now longer available in the Driver source from the package and adjust the category 
             $RemovedDrivers = $CurrentDrivers | Where { $NewDrivers -notcontains $_ }  | Remove-DriverFromDriverPackage -Package $DriverPackage
 
-            # Remove all Drivers from the Driver pool that have no category anymore, assuming they don't belong to any package now.
-            $RemovedDrivers | Where { $_.CategoryInstance_UniqueIDs -eq $null } | Remove-Driver
+            
+            # Remove all drivers that no longer belong to any Driver package from the Driver Pool
+            $RemovedDrivers | Where { (Get-DriverPackage -CIID $_.CI_ID) -eq $null } | foreach {$RemovedDrivers = $RemovedDrivers -ne $_ } Remove-Driver
 
             # Try to update ContentSourcePath of removed drivers that are in other driver packages, if it is pointing to the current package path
             # If it can't be updated the "BrokenContentSourcePath" category will be added
-            $RemovedDrivers | Where { ($_.CategoryInstance_UniqueIDs -ne $null) -and ($_.DriverContentSourcePath -like "*$Folders\$PackageName*") } | Update-DriverContentSourcePath -DriverSourceRootFolder $DriverSourceRootFolder 
+            $RemovedDrivers |  Update-DriverContentSourcePath -DriverSourceRootFolder $DriverSourceRootFolder 
 
             # Update hash file
             Get-ChildItem $DriverSourcePath.FullName -Filter "*.hash"  | Remove-Item 
@@ -262,7 +313,11 @@ Begin {
 
             #ParentFolderID
             [Parameter(ParameterSetName="Name")]
-            [uint32]$ParentFolderID = 0
+            [uint32]$ParentFolderID = 0,
+
+            # Driver CI_ID
+            [Parameter(ParameterSetName="Driver")]
+            [string]$CIID
 
         )
 
@@ -282,6 +337,10 @@ Begin {
                 Get-CMObject -Class SMS_DriverPackage -Filter "Name = '$Name'"
 
             }
+
+        } elseif (![string]::IsNullOrEmpty($CIID)) { 
+
+            Get-CMObject -Class SMS_DriverPackage -Filter "PackageID IN (SELECT PackageID FROM SMS_PackageToContent WHERE CI_ID = '$CIID')"
 
         }
 
@@ -378,7 +437,7 @@ Begin {
     # Imports the specified driver into ConfigMgr
     function Import-Driver
     {
-        [CmdletBinding()]
+        [CmdletBinding(SupportsShouldProcess)]
         PARAM
         (
             [Parameter(Position=1, ValueFromPipelineByPropertyName=$true)]
@@ -477,7 +536,12 @@ Begin {
                         } else {
 
                             $Driver.CategoryInstance_UniqueIDs += $CategoryID
-                            $Driver.Put() | Out-Null
+                            if ($PSCmdlet.ShouldProcess("Driver $($Driver.LocalizedDisplayName)", "Add category")) {
+
+                                $Driver.Put() | Out-Null
+
+                            }
+
                             Write-Verbose "Added category $($Category.LocalizedCategoryInstanceName) on existing driver $($Driver.LocalizedDisplayname)."
 
                         }
@@ -487,8 +551,14 @@ Begin {
                     if (!(Test-Path($Driver.ContentSourcePath))) {
 
                         Write-Verbose "Existing driver path ""$($Driver.ContentSourcePath)"" isn't valid. Updating with current driver path."
+
                         $Driver.ContentSourcePath = $DriverPath
-                        $Driver.Put() | Out-Null
+
+                        if ($PSCmdlet.ShouldProcess("Driver $($Driver.LocalizedDisplayName)", "Update ContentSourcePath")) {
+
+                            $Driver.Put() | Out-Null
+
+                        }
 
                     }
 
@@ -510,7 +580,7 @@ Begin {
     # Adds a Driver to a Driver Package
     function Add-DriverToDriverPackage
     {
-        [CmdletBinding()]
+        [CmdletBinding(SupportsShouldProcess)]
         PARAM
         (
         
@@ -550,7 +620,11 @@ Begin {
                     # Invoke the method
                     try {
 
-                        $Package.AddDriverContent($ContentIDs, $Sources, $false)
+                        if ($PSCmdlet.ShouldProcess("Drvier Package $($Package.Name)", "Invoke AddDriverContent")) {
+
+                            $Package.AddDriverContent($ContentIDs, $Sources, $false)
+
+                        }
 
                     } catch [System.Management.Automation.MethodInvocationException] {
 
@@ -586,7 +660,7 @@ Begin {
     # Removes a Driver from the Driver Package
     function Remove-DriverFromDriverPackage {
 
-        [CmdLetBinding()]
+        [CmdLetBinding(SupportsShouldProcess)]
         PARAM (
 
             [Parameter(Mandatory, ValueFromPipeline)]
@@ -604,7 +678,11 @@ Begin {
             if (($ContentIDs -ne $null) -and ($ContentIDs.Count -gt 0)) {
 
                 Write-Verbose "Removing driver $($Driver.LocalizedDisplayName) from Driver package $($Package.Name)"
-                $DriverPackage.RemoveDriverContent($ContentIDs, $false)
+                if ($PSCmdlet.ShouldProcess("Driver Package $($DriverPackager.Name)", "Remove Driver")) {
+
+                    $DriverPackage.RemoveDriverContent($ContentIDs, $false)
+
+                }
 
             } else {
                     
@@ -645,63 +723,80 @@ Begin {
 
         Process {
 
-            # Check if driver points to current SourcePath
-            # If not, it's a duplicate from a different package then no cleanup is necessary
+            # Check if ContentSourcePath is still valid
+            if (!(Test-Path $Driver.ContentSourcePath)) {
 
-            Write-Verbose "Driver ContentSourcePath has been removed. Searching for duplicate driver in $($DriverSourceRootFolder.Fullname)."
-            $UpdatedContentSourcePath = $false
+                Write-Verbose "Driver ContentSourcePath has been removed. Searching for duplicate driver in $($DriverSourceRootFolder.Fullname)."
+                $UpdatedContentSourcePath = $false
 
-            # Driver Content Source path was from this package
-            # Get all inf files with the same name
-            # And check if any of them has the same CI_UniqueID
-            $NewPathFound = $false
-            $InfFile = $Driver.DriverInfFile
+                # Driver Content Source path was from this package
+                # Get all inf files with the same name
+                # And check if any of them has the same CI_UniqueID
+                $NewPathFound = $false
+                $InfFile = $Driver.DriverInfFile
 
-            $PossibleInfFiles = Get-ChildItem "$DriverSourceRootFolder" -Filter "$InfFile)" -recurse
-            foreach ($infFile in $PossibleInfFiles) {
+                $PossibleInfFiles = Get-ChildItem "$DriverSourceRootFolder" -Filter "$InfFile)" -recurse
+                foreach ($infFile in $PossibleInfFiles) {
             
-                # Import each driver and see if the Unique ID matches
-                $NewDriver = Import-Driver -InfFile $_.FullName 
+                    # Import each driver and see if the Unique ID matches
+                    $NewDriver = Import-Driver -InfFile $_.FullName 
                 
-                if ($NewDriver.CI_UniqueID -eq $Driver.CI_UniqueID) {     
+                    if ($NewDriver.CI_UniqueID -eq $Driver.CI_UniqueID) {     
                     
-                    # Found a different path for the same driver
-                    # Update ContentSourcePath
-                    Write-Verbose "Found alternative ContentSourcePath ""$($_.Parent.FullName)"" and updating Driver $($Driver.LocalizedDisplayname)."
-                    $Driver.ContentSourcePath = $_.Parent.FullName
-                    $Driver.Put() | Out-Null
+                        # Found a different path for the same driver
+                        # Update ContentSourcePath
+                        Write-Verbose "Found alternative ContentSourcePath ""$($_.Parent.FullName)"" and updating Driver $($Driver.LocalizedDisplayname)."
+                        $Driver.ContentSourcePath = $_.Parent.FullName
+                        if ($PSCmdlet.ShouldProcess("Driver $($Driver.LocalizedDisplayName)", "Update ContentSourcePath")) {
 
-                    $NewPathFound = $true
-                    break
+                            $Driver.Put() | Out-Null
+
+                        }
+
+                        $NewPathFound = $true
+                        break
+
+                    }
 
                 }
-
-            }
             
-            if (!$NewPathFound) {
+                if (!$NewPathFound) {
 
-                # Add "BrokenContenSourcePath" category to Driver
-                if ($Driver.CategoryInstance_UniqueIDs -notcontains $BrokenCategoryID) {
+                    # Add "BrokenContenSourcePath" category to Driver
+                    if ($Driver.CategoryInstance_UniqueIDs -notcontains $BrokenCategoryID) {
                                 
-                    Write-Warning "ContentSourcePath no longer valid for Driver $($Driver.LocalizedDisplayName). Adding Category ""BrokenContentSourcePath""."
-                    $Driver.CategoryInstance_UniqueIDs += $BrokenCategoryID
-                    $Driver.Put() | Out-Null
+                        Write-Warning "ContentSourcePath no longer valid for Driver $($Driver.LocalizedDisplayName). Adding Category ""BrokenContentSourcePath""."
+                        $Driver.CategoryInstance_UniqueIDs += $BrokenCategoryID
+                        if ($PSCmdlet.ShouldProcess("Driver $($Driver.LocalizedDisplayName)", "Add Category")) {
 
-                }
+                            $Driver.Put() | Out-Null
 
-            } else {
+                        }
 
-                # Remove "BrokenContentSourcePath" Category if necessary
-                if ($Driver.CategoryInstance_UniqueIDs -contains $BrokenID) {
+                    }
+
+                } else {
+
+                    # Remove "BrokenContentSourcePath" Category if necessary
+                    if ($Driver.CategoryInstance_UniqueIDs -contains $BrokenID) {
                             
-                    Write-Verbose "ContentSourcePath for Driver $($Driver.LocalizedDisplayName) was updated. Removing Category ""BrokenContentSourcePath""."
-                    $Driver.CategoryInstance_UniqueIDs -= $BrokenID
-                    $Driver.Put() | Out-Null
+                        Write-Verbose "ContentSourcePath for Driver $($Driver.LocalizedDisplayName) was updated. Removing Category ""BrokenContentSourcePath""."
+                        $Driver.CategoryInstance_UniqueIDs -= $BrokenID
+                        if ($PSCmdlet.ShouldProcess("Driver $($Driver.LocalizedDisplayName)", "Remove Category")) {
 
-                }
+                            $Driver.Put() | Out-Null
+
+                        }
+
+                    }
                 
+                }
+
             }
 
+
+            # Write driver object back to pipeline
+            $Driver
         }
     }
 
@@ -786,12 +881,6 @@ Begin {
             $Category
         )
 
-        Begin {
-
-            
-
-        }
-
 
         Process {
 
@@ -799,9 +888,10 @@ Begin {
 
             $UpdatedCategories = @($Driver.CategoryInstance_UniqueIDs | Where {$_ -ne $Category.CategoryInstance_UniqueID})
 
-            if ($PSCmdlet.ShouldProcess("Driver $($Driver.LocalizedDisplayName)", "Remove Category $($Category.LocalizedCategoryInstanceName)")) {             
+            $Driver.CategoryInstance_UniqueIDs = $UpdatedCategories
 
-                $Driver.CategoryInstance_UniqueIDs = $UpdatedCategories
+            if ($PSCmdlet.ShouldProcess("Driver $($Driver.LocalizedDisplayName)", "Remove Category $($Category.LocalizedCategoryInstanceName)")) {
+
                 $Driver.Put() | Out-Null
 
             }
@@ -1158,7 +1248,7 @@ Begin {
     # Creates a new ConfigMgr Object
     function New-CMObject {
 
-        [CmdletBinding()]
+        [CmdletBinding(SupportsShouldProcess)]
         PARAM (
 
             # ConfigMgr WMI provider Class
@@ -1183,11 +1273,19 @@ Begin {
 
             if ($CMCredential -ne $null) {
 
-                $NewCMObject = Set-WmiInstance -Class $Class -Arguments $Arguments -ComputerName $CMProviderServer -Namespace $CMNamespace -Credential $CMCredential
+                if ($PSCmdlet.ShouldProcess("Class: $Class", "Call Set-WmiInstance")) {
+
+                    $NewCMObject = Set-WmiInstance -Class $Class -Arguments $Arguments -ComputerName $CMProviderServer -Namespace $CMNamespace -Credential $CMCredential
+
+                }
 
             } else {
          
-                $NewCMObject = Set-WmiInstance -Class $Class -Arguments $Arguments -ComputerName $CMProviderServer -Namespace $CMNamespace
+                if ($PSCmdlet.ShouldProcess("Class: $Class", "Call Set-WmiInstance")) {
+
+                    $NewCMObject = Set-WmiInstance -Class $Class -Arguments $Arguments -ComputerName $CMProviderServer -Namespace $CMNamespace
+
+                }
 
             }
 
