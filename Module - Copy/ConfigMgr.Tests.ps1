@@ -16,7 +16,7 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 Get-Module ConfigMgr | Remove-Module
 
-Import-Module ConfigMgr
+Import-Module "$here\ConfigMgr.psm1"
 
 InModuleScope ConfigMgr {
 
@@ -271,7 +271,7 @@ InModuleScope ConfigMgr {
             }
         
             It "Resolve Class name and filter to object" {
-                $Result = Set-CMInstance -ClassName "TestClass" -Filter "Name='explorer.exe'"
+                $Result = Set-CMInstance -ClassName "TestClass" -Filter "Name='explorer.exe'" 
 
                 $Result.CreationClassName | Should Be "Win32_Process"
                 $Result.Name | Should Be "explorer.exe"
@@ -534,7 +534,7 @@ InModuleScope ConfigMgr {
         }
 
         It "Use supplied values" {
-            $TestFolder = New-Folder -Name "TestFolder" -Type "DriverPackage" -PassThru 
+            $TestFolder = New-Folder -Name "TestFolder" -Type "DriverPackage"  
 
             $TestFolder | select -ExpandProperty "Class" | Should Be "SMS_ObjectContainerNode"
             $TestFolder | select -ExpandProperty "Arguments" | %{$_.Name} | Should Be "TestFolder"
@@ -544,24 +544,24 @@ InModuleScope ConfigMgr {
         }
 
         It "Use correct object type" {
-            New-Folder -Name "TestFolder" -PassThru -Type Package | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 2
-            New-Folder -Name "TestFolder" -PassThru -Type Advertisement | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 3
-            New-Folder -Name "TestFolder" -PassThru -Type Query | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 7
-            New-Folder -Name "TestFolder" -PassThru -Type Report | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 8
-            New-Folder -Name "TestFolder" -PassThru -Type MeteredProductRule | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 9
-            New-Folder -Name "TestFolder" -PassThru -Type ConfigurationItem | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 11
-            New-Folder -Name "TestFolder" -PassThru -Type OSInstallPackage | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 14
-            New-Folder -Name "TestFolder" -PassThru -Type StateMigration | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 17
-            New-Folder -Name "TestFolder" -PassThru -Type ImagePackage | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 18
-            New-Folder -Name "TestFolder" -PassThru -Type BootImagePackage | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 19
-            New-Folder -Name "TestFolder" -PassThru -Type TaskSequencePackage | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 20
-            New-Folder -Name "TestFolder" -PassThru -Type DeviceSettingPackage | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 21
-            New-Folder -Name "TestFolder" -PassThru -Type DriverPackage | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 23
-            New-Folder -Name "TestFolder" -PassThru -Type Driver | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 25
-            New-Folder -Name "TestFolder" -PassThru -Type SoftwareUpdate | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 1011
-            New-Folder -Name "TestFolder" -PassThru -Type ConfigurationBaseline | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 2011
-            New-Folder -Name "TestFolder" -PassThru -Type DeviceCollection | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 5000
-            New-Folder -Name "TestFolder" -PassThru -Type UserCollection | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 5001
+            New-Folder -Name "TestFolder" -Type Package | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 2
+            New-Folder -Name "TestFolder" -Type Advertisement | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 3
+            New-Folder -Name "TestFolder" -Type Query | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 7
+            New-Folder -Name "TestFolder" -Type Report | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 8
+            New-Folder -Name "TestFolder" -Type MeteredProductRule | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 9
+            New-Folder -Name "TestFolder" -Type ConfigurationItem | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 11
+            New-Folder -Name "TestFolder" -Type OSInstallPackage | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 14
+            New-Folder -Name "TestFolder" -Type StateMigration | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 17
+            New-Folder -Name "TestFolder" -Type ImagePackage | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 18
+            New-Folder -Name "TestFolder" -Type BootImagePackage | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 19
+            New-Folder -Name "TestFolder" -Type TaskSequencePackage | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 20
+            New-Folder -Name "TestFolder" -Type DeviceSettingPackage | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 21
+            New-Folder -Name "TestFolder" -Type DriverPackage | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 23
+            New-Folder -Name "TestFolder" -Type Driver | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 25
+            New-Folder -Name "TestFolder" -Type SoftwareUpdate | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 1011
+            New-Folder -Name "TestFolder" -Type ConfigurationBaseline | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 2011
+            New-Folder -Name "TestFolder" -Type DeviceCollection | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 5000
+            New-Folder -Name "TestFolder" -Type UserCollection | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 5001
         }
 
     }
@@ -621,7 +621,7 @@ InModuleScope ConfigMgr {
         }
 
         It "Create new TaskSequencePackage" {
-            $TestPackage = New-TaskSequencePackage -Name "New TaskSequencePackage" -Description "Test Description" -TaskSequence 
+            $TestPackage = New-TaskSequencePackage -Name "New TaskSequencePackage" -Description "Test Description"
 
             $TestPackage | select -ExpandProperty "Class" | Should Be "SMS_TaskSequencePackage"
             $TestPackage | select -ExpandProperty "Arguments" | %{$_.Name} | Should Be "New TaskSequencePackage"

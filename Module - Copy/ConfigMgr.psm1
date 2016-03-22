@@ -113,7 +113,7 @@
                             $RetryCount += 1
                             $Retry = $true
                             Write-Verbose "CIM/WMI command failed with Error 2147944127 (HRESULT 0x800706bf)."
-                            Write-Verbose "Common RPC error, retry on default. Current retry count $RetryCount"
+                            Write-Verbose "Common RPC error, so retrying. Retry count $RetryCount"
                         }
                     } else {
                         throw $_.Exception
@@ -182,10 +182,10 @@
 
                 if (($WSMan -ne $null) -and ($WSMan.ProductVersion -match 'Stack: ([3-9]|[1-9][0-9]+)\.[0-9]+')) {
                     try {
-                        Write-Verbose -Message "Attempt to connect to $ComputerName using the WSMAN protocol."
+                        Write-Verbose -Message "Attempting to connect to $ComputerName using the WSMAN protocol."
                         $Session = New-CimSession @SessionParams
                     } catch {
-                        Write-Verbose "Unable to connect to $ComputerName using the WSMAN protocol. Test DCOM ..."
+                        Write-Verbose "Unable to connect to $ComputerName using the WSMAN protocol. Testing DCOM ..."
                         
                     }
                     try {
@@ -198,7 +198,7 @@
                     $SessionParams.SessionOption = $Opt
  
                     try {
-                        Write-Verbose -Message "Attempt to connect to $ComputerName using the DCOM protocol."
+                        Write-Verbose -Message "Attempting to connect to $ComputerName using the DCOM protocol."
                         $Session = New-CimSession @SessionParams
                     } catch {
                         Write-Error -Message "Unable to connect to $ComputerName using the WSMAN or DCOM protocol. Verify $ComputerName is online and try again."
@@ -241,7 +241,7 @@
             if (Test-CMConnection) {
 
                 if (($Filter.Contains(" JOIN ")) -or ($ContainsLazy.IsPresent)) {
-                    Write-Verbose "Fall back to WMI cmdlets"                
+                    Write-Verbose "Falling back to WMI cmdlets"                
                     $WMIParams = @{
                         ComputerName = $global:CMProviderServer;
                         Namespace = $CMNamespace;
@@ -305,7 +305,7 @@
                     if ($NewCMObject -ne $null) {
                         #try to update supplied arguments
                         try {
-                            Write-Debug "Add Arguments to WMI class"
+                            Write-Debug "Adding Arguments to WMI class"
                             $Arguments.GetEnumerator() | foreach {
                                 $Key = $_.Key
                                 $Value = $_.Value
@@ -497,6 +497,9 @@
             if ($PSCmdlet.ShouldProcess("$CMProviderServer", "Invoke $MethodName")) {  
                 # Ensure ConfigMgr Provider information is available
                 if (Test-CMConnection) {
+                    
+                    Do {
+                        $retry = $false
 
                         if ($ClassInstance -ne $null) {
                             $Result = Invoke-CimCommand {Invoke-CimMethod -InputObject $ClassInstance -MethodName $MethodName -Arguments $Arguments -ErrorAction Stop}
@@ -511,6 +514,7 @@
                                 Write-Verbose "Failed to invoked $MethodName on $CMProviderServer. ReturnValue: $($Result.ReturnValue)"
                             }
                         } 
+                    } While ($retry)
 
                     Return $Result
                 }
@@ -540,46 +544,47 @@
         Process {
             $Result = $false
 
-            
-            if ($SourceFolderID -eq $TargetFolderID) {
-                Write-Verbose "Move-CMObject: SourceFolder $SourceFolderID and TargetFolder $TargetFolderID are identical. No action necessary."
-                $Result = $true
-            } else {
-                # Verify Folders exist
-                $SourceFolder = Get-Folder -ID $SourceFolderID
-                $TargetFolder = Get-Folder -ID $TargetFolderID
-                if (($SourceFolder -ne $null) -and ($TargetFolder -ne $null)) {
-                    # Fix ObjectType if Source or Target are the root
-                    if ($TargetFolderID -eq 0) { $TargetFolder.objectType = $SourceFolder.ObjectType}
-                    if ($SourceFolderID -eq 0) { $SourceFolder.objectType = $TargetFolder.ObjectType}
+            # Ensure ConfigMgr Provider information is available
+            if (Test-CMConnection) {
+                if ($SourceFolderID -eq $TargetFolderID) {
+                    Write-Verbose "Move-CMObject: SourceFolder $SourceFolderID and TargetFolder $TargetFolderID are identical. No action necessary."
+                    $Result = $true
+                } else {
+                    # Verify Folders exist
+                    $SourceFolder = Get-Folder -ID $SourceFolderID
+                    $TargetFolder = Get-Folder -ID $TargetFolderID
+                    if (($SourceFolder -ne $null) -and ($TargetFolder -ne $null)) {
+                        # Fix ObjectType if Source or Target are the root
+                        if ($TargetFolderID -eq 0) { $TargetFolder.objectType = $SourceFolder.ObjectType}
+                        if ($SourceFolderID -eq 0) { $SourceFolder.objectType = $TargetFolder.ObjectType}
                     
-                    # Verify folders have the same ObjectType
-                    if ($SourceFolder.ObjectType -eq $TargetFolder.ObjectType) {
-                        $Arguments = @{
-                            InstanceKeys = $ObjectID
-                            ContainerNodeID=$SourceFolderID
-                            TargetContainerNodeID=$TargetFolderID
-                            ObjectType=$TargetFolder.ObjectType
-                        }
+                        # Verify folders have the same ObjectType
+                        if ($SourceFolder.ObjectType -eq $TargetFolder.ObjectType) {
+                            $Arguments = @{
+                                InstanceKeys = $ObjectID
+                                ContainerNodeID=$SourceFolderID
+                                TargetContainerNodeID=$TargetFolderID
+                                ObjectType=$TargetFolder.ObjectType
+                            }
 
-                        $MethodResult = Invoke-CMMethod -ClassName SMS_ObjectContainerItem -MethodName MoveMembers -Arguments $Arguments
-                        if (($MethodResult -ne $null) -and ($MethodResult.ReturnValue -eq 0)) {
-                            Write-Verbose "Successfully moved object $ObjectID from $($SourceFolder.Name) to $($TargetFolder.Name)"
-                            $Result = $true
+                            $MethodResult = Invoke-CMMethod -ClassName SMS_ObjectContainerItem -MethodName MoveMembers -Arguments $Arguments
+                            if (($MethodResult -ne $null) -and ($MethodResult.ReturnValue -eq 0)) {
+                                Write-Verbose "Successfully moved object $ObjectID from $($SourceFolder.Name) to $($TargetFolder.Name)"
+                                $Result = $true
+                            }
+                        } else {
+                            Write-Warning "Unable to move object $ObjectID. SourceFolder $SourceFolderID ObjectType $($SourceFolder.ObjectType) and TargetFolder $TargetFolderID ObjectType $($TargetFolder.ObjectType) don't match."
                         }
                     } else {
-                        Write-Warning "Unable to move object $ObjectID. SourceFolder $SourceFolderID ObjectType $($SourceFolder.ObjectType) and TargetFolder $TargetFolderID ObjectType $($TargetFolder.ObjectType) don't match."
+                        $Message = "Unable to move object $ObjectID. "
+
+                        if ($SourceFolder -eq $null) { $Message += "SourceFolder $SourceFolderID cannot be retrieved. "}
+                        if ($TargetFolder -eq $null) { $Message += "TargetFolder $TargetFolderID cannot be retrieved. "}
+
+                        Write-Warning $Message
                     }
-                } else {
-                    $Message = "Unable to move object $ObjectID. "
-
-                    if ($SourceFolder -eq $null) { $Message += "SourceFolder $SourceFolderID cannot be retrieved. "}
-                    if ($TargetFolder -eq $null) { $Message += "TargetFolder $TargetFolderID cannot be retrieved. "}
-
-                    Write-Warning $Message
                 }
             }
-
             Return $Result
         }
     }
@@ -639,19 +644,16 @@
                 }
 
                 if ($ParentFolderID -eq [uint32]::MaxValue) {
-                    Write-Verbose "Get Folder '$Name'."
                     Get-CMInstance -ClassName SMS_ObjectContainerNode -Filter "((Name = '$Name') AND (ObjectType=$TypeID))"
                 } else {
-                    Write-Verbose "Get Folder '$Name' with ParentFolderID $ParentFolderID."
                     Get-CMInstance -ClassName SMS_ObjectContainerNode -Filter "((Name = '$Name') AND (ObjectType=$TypeID) AND (ParentContainerNodeID = $ParentFolderID))"
                 }
             } else {
                 if ($ID -gt 0) {
-                    Write-Verbose "Get Folder $ID." 
                     Get-CMInstance -ClassName SMS_ObjectContainerNode -Filter "ContainerNodeID = $ID"
                 } else {
                     # Return custom object to ease error handling
-                    Write-Verbose "ID 0 is the root folder. Return custom object."
+                    Write-Verbose "Get-Folder: ID 0 is the root folder. Returning custom object."
                     [PSCustomObject]@{Name = "Root"; ContainerNodeID = 0; ObjectType = 0}
                 }
             }
@@ -676,9 +678,7 @@
             # The unique ID of the parent folder. 
             [Parameter(ValueFromPipeline)]
             [ValidateNotNullOrEmpty()]
-            [string]$ParentFolderID = 0,
-
-            [switch]$PassThru
+            [string]$ParentFolderID = 0
         )
 
         Begin {
@@ -715,27 +715,13 @@
                 ParentContainerNodeid = $ParentFolderID
             }
 
-            $NewFolder = New-CMInstance -ClassName SMS_ObjectContainerNode -Arguments $Arguments
-
-            if ($PassThru.IsPresent) {
-                    Write-Verbose "Return new Folder."
-                    $NewFolder
-            } else { 
-                if ($NewFolder -ne $null) {
-                    Write-Verbose "Successfully created Folder '$Name' ($($NewFolder.ContainerNodeID))."
-                } else {
-                    Write-Error "Failed to create Folder '$Name'."
-                }
-            }
+            New-CMInstance -ClassName SMS_ObjectContainerNode -Arguments $Arguments
         }
     }
 
     ###########################
     # SMS_TaskSequencePackage #
     ###########################
-    
-    # Gets a Task Sequence Package by Name or ID
-    # If the name is not unique, this method could return an array
     Function Get-TaskSequencePackage {
         [CmdletBinding(SupportsShouldProcess,DefaultParameterSetName="ID")]
         PARAM (
@@ -759,16 +745,13 @@
 
         Process{
             if (!([string]::IsNullOrEmpty($ID))) {
-                Write-Verbose "Get Task Sequence Package by PackageID '$ID'."
                 Get-CMInstance -ClassName "SMS_TaskSequencePackage" -Filter "PackageID='$ID'" -ContainsLazy:$IncludeLazyProperties
             } elseif (!([string]::IsNullOrEmpty($Name))) {
-                Write-Verbose "Get Task Sequence Package by Name '$Name'."
                 Get-CMInstance -ClassName "SMS_TaskSequencePackage" -Filter "Name='$Name'" -ContainsLazy:$IncludeLazyProperties
             } 
         }
     }
 
-    # Creates a new Task Sequence Package
     Function New-TaskSequencePackage {
         [CmdletBinding(SupportsShouldProcess)]
         PARAM (
@@ -784,9 +767,8 @@
             [string]$Description = "",
 
             # Additional Properties
-            [Hashtable]$Properties,
+            [Hashtable]$Properties
 
-            [switch]$PassThru
         )
 
         Begin {
@@ -800,38 +782,29 @@
             }
 
             if ($Properties -ne $null) {
-                # Remove Name and Description from the supplied properties, as supplied named parameters will be used instead
                 if ($Properties.ContainsKey("Name")) {$Properties.Remove("Name")}
                 if (($Properties.ContainsKey("Description")) -and ([string]::IsNullOrEmpty($Description))) {$Properties.Remove("Description")}
                 $Arguments = $Arguments + $Properties
             }
 
             # Create local instance of SMS_TaskSequencePackage
-            Write-Verbose "Create new Task Sequence Package '$Name'"
             $TaskSequencePackage = Invoke-CimCommand {New-CimInstance -ClassName "SMS_TaskSequencePackage" -Arguments $Arguments -Namespace $Global:CMNamespace -ClientOnly -ErrorAction Stop}
 
             # Invoke SetSequence to add the sequence and create the package
-            Write-Verbose "Add Task Sequence to new Task Sequence Package"
             [string]$Result = Set-TaskSequence -TaskSequencePackage $TaskSequencePackage -TaskSequence $TaskSequence
 
             # Result should contain "PackageID"
             if (!([string]::IsNullOrEmpty($Result)) -and ($Result.Contains("SMS_TaskSequencePackage.PackageID="))) {
                 $PackageID = $Result.Replace("SMS_TaskSequencePackage.PackageID=","").Replace("""","")
-                Write-Verbose "Successfully created Task Sequence Package $PackageID."
 
-                if ($PassThru.IsPresent) {
-                    $TaskSequencePackage = Get-TaskSequencePackage -ID $PackageID
-                    Write-Verbose "Return new Task Sequence Package"
-                    $TaskSequencePackage
-                } 
+                $TaskSequencePackage = Get-TaskSequencePackage -ID $PackageID
+
+                $TaskSequencePackage
             } else {
-                Write-Verbose "Failed to create new Task Sequence Package."
-                if ($PassThru.IsPresent) {
-                    $Result
-                } else {
-                    $null
-                }
+
+                $null
             }
+            
         }
     }
     
@@ -853,9 +826,8 @@
 
             [Parameter(Mandatory,ParameterSetName="Package")]
             [ValidateNotNullOrEmpty()]
-            $TaskSequencePackage,
+            $TaskSequencePackage
 
-            [switch]$PassThru
         )
 
         Begin {
@@ -873,38 +845,21 @@
             }
 
             if ($TaskSequencePackage -ne $null) {
-                Write-Verbose "Get Task Sequence from Task Sequence Package $($TaskSequencePackage.PackageID)"
+
                 $Result = Invoke-CMMethod -ClassName "SMS_TaskSequencePackage" -MethodName "GetSequence" -Arguments @{TaskSequencePackage=$TaskSequencePackage}
 
                 if ($Result -ne $null) {
                     if ($Result.ReturnValue -eq 0) {
-                        if ($PassThru.IsPresent) {
-                            Write-Verbose "Return Result object."
-                            $Result
-                        } else {
-                            Write-Verbose "Return Task Sequence."
-                            $TaskSequence = $Result.TaskSequence
 
-                            $TaskSequence
-                        }
-                    } else {
-                        Write-Verbose "Failed to execute GetSequence. ReturnValue $($Result.ReturnValue)"
-                        if ($PassThru.IsPresent) {
-                            $Result
-                        } else {
-                            $null
-                        }
+                        $TaskSequence = $Result.TaskSequence
+
+                        $TaskSequence
                     }
-                } else {
-                    Write-Verbose "Failed to get Task Sequence"
                 }
-            } else {
-                Write-Verbose "TaskSequencePackage not supplied."
             }
         }
     }
 
-    # Updates the specified Task Sequence Package with the supplied Task Sequence
     Function Set-TaskSequence {
         [CmdletBinding(SupportsShouldProcess)]
         PARAM (
@@ -917,9 +872,8 @@
             [object]$TaskSequencePackage,
 
             [Parameter(Mandatory)] 
-            [object]$TaskSequence,
+            [object]$TaskSequence
 
-            [switch]$PassThru
         )
 
         Begin {
@@ -933,43 +887,31 @@
 
             if ($TaskSequencePackage -ne $null) {
 
-                Write-Verbose "Update Task Sequence of Task Sequence Package $($TaskSequencePackage.PackageID)"
                 $Result = Invoke-CMMethod -ClassName "SMS_TaskSequencePackage" -MethodName "SetSequence" -Arguments @{TaskSequencePackage=$TaskSequencePackage;TaskSequence=$TaskSequence}
 
-                if ($PassThru.IsPresent) {
-                    # Don't evaluate on PassThru
-                    $Result
+                if ($Result -ne $null) {
+                    if ($Result.ReturnValue -eq 0) {
 
-                } else {
-                    if ($Result -ne $null) {
-                        if ($Result.ReturnValue -eq 0) {
-                            Write-Verbose "Successfully updated Task Sequence at $($Result.SavedTaskSequencePackagePath)"
-                            Write-Verbose "Return SavedTaskSequencePackagePath."
-                            $Path = $Result.SavedTaskSequencePackagePath
-                            $Path
-                        }
+                        $Path = $Result.SavedTaskSequencePackagePath
+
+                        $Path
                     } else {
-                        Write-Error "Failed to update Task Sequence. ReturnValue: $($Result.ReturnValue)"
+
+                        Write-Error "Error $($Result.ReturnValue) on executing SetSequence."
                     }
-                } else {
-                    Write-Error "Failed to execute SetSequence."
                 }
-            } else {
-                Write-Error "TaskSequencePackage not supplied."
             }
         }
     }
 
-    # Converts the supplied Task Sequence xml object into a Task Sequence wmi object
     Function Convert-XMLToTaskSequence {
         [CmdletBinding(SupportsShouldProcess)]
         PARAM (
             # PackageID
             [Parameter(Mandatory)] 
             [ValidateNotNullOrEmpty()]
-            $TaskSequenceXML,
+            $TaskSequenceXML
 
-            [switch]$PassThru
         )
 
         Begin {
@@ -981,41 +923,21 @@
 
             if ($TaskSequenceXML -ne $null) {
                 $TSXMLString = $TaskSequenceXML.OuterXml
-                
-                Write-Verbose "Convert Task Sequence XML object to WMI object."
+
                 $Result = Invoke-CMMethod -ClassName "SMS_TaskSequencePackage" -MethodName "ImportSequence" -Arguments @{SequenceXML=$TSXMLString}
 
                 if ($Result -ne $null) {
                     if ($Result.ReturnValue -eq 0) {
-                        Write-Verbose "Successfully converted Task Sequence XML object to WMI object."                        
-                        if ($PassThru.IsPresent) {
-                            Write-Verbose "Return Result object."
-                            $Result
-                        } else {
-                            Write-Verbose "Return Task Sequence object."
-                            $TaskSequence = $Result.TaskSequence
 
-                            $TaskSequence
-                        }
-                    } else {
-                        Write-Verbose "Failed to convert xml to wmi. ReturnValue: $($Result.ReturnValue)"
-                        if ($PassThru.IsPresent) {
-                            $Result
-                        } else {
-                            $null
-                        }
+                        $TaskSequence = $Result.TaskSequence
+
+                        $TaskSequence
                     }
-                } else {
-                    Write-Verbose "Failed to execute ImportSequence."
-                    $null
                 }
-            } else {
-                Write-Verbose "Task Sequence XML not supplied."
             }
         }
     }
 
-    # Converts the supplied Task Sequence object into xml.
     Function Convert-TaskSequenceToXML {
         [CmdletBinding(SupportsShouldProcess)]
         PARAM (
@@ -1025,6 +947,7 @@
             $TaskSequence,
 
             [switch]$KeepSecretInformation
+
         )
 
         Begin {
@@ -1035,7 +958,6 @@
 
             if ($TaskSequence -ne $null) {
 
-                Write-Verbose "Convert Task Sequence WMI object to xml object."
                 $Result = Invoke-CMMethod -ClassName "SMS_TaskSequence" -MethodName "SaveToXml" -Arguments @{TaskSequence=$TaskSequence} -SkipValidation
 
                 if ($Result -ne $null) {
@@ -1053,8 +975,6 @@
                 }
 
                 $TaskSequenceXML
-            } else {
-                Write-Verbose "Task Sequence object not supplied."
             }
         }
     }
