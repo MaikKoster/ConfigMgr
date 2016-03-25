@@ -20,6 +20,10 @@ Import-Module ConfigMgr
 
 InModuleScope ConfigMgr {
 
+    #################################
+    #region  ConfigMgr Connection   #
+    #################################
+
     Describe "New-CMConnection" {
         # Ensure global module variables are cleared
         $global:CMProviderServer = ""
@@ -145,8 +149,13 @@ InModuleScope ConfigMgr {
             }
         }
     }
+    #################################
+    #endregion ConfigMgr Connection #
+    #################################
 
-
+    ########################
+    #region  CIM Methods   #
+    ########################
     Describe "Get-CMInstance" {
         Context "No connection" {
             Mock Get-CimInstance {throw}
@@ -259,7 +268,9 @@ InModuleScope ConfigMgr {
                 Get-CimInstance "Win32_Process" -Filter $Filter | Select -First 1
             }  -ParameterFilter {$ClassName -eq "TestClass"}
 
-            Mock Get-CMInstance { Get-CimInstance "Win32_ComputerSystem" }
+            Mock Invoke-CimCommand { Get-CimInstance "Win32_ComputerSystem" }
+
+            
 
             It "Throw if no classname and filter is supplied" {
                 {Set-CMInstance -ClassName "" -filter "Name='Test'"} | Should Throw
@@ -391,8 +402,139 @@ InModuleScope ConfigMgr {
             #}
         }
     }
+    ########################
+    #endregion CIM Methods #
+    ########################
 
 
+    #########################
+    #region  SMS_R_System   #
+    #########################
+    Describe "Get-Device" {
+    
+        Mock Get-CMInstance { [PSCustomObject]@{ClassName = $ClassName; Filter = $Filter} }
+    
+        It "Throw if no name is supplied" {
+            {Get-Device -Name ""} | Should Throw
+        } 
+
+        It "Return computer by name" {
+            Get-Device -Name "TestComputer" | select -ExpandProperty "ClassName" | Should Be "SMS_R_System"
+            Get-Device -Name "TestComputer" | select -ExpandProperty "Filter" | Should Not Be ""
+            Get-Device -Name "TestComputer" | select -ExpandProperty "Filter" | Should Be "((Name = 'TestComputer') OR (NetbiosName = 'TestComputer'))"
+        }
+
+        It "Return list of computers by multiple names" {
+            $Computers = Get-Device -Name "TestComputer1", "TestComputer2" | select -ExpandProperty "Filter" 
+
+            $Computers | Should Be "(((Name = 'TestComputer1') OR (Name = 'TestComputer2')) OR ((NetbiosName = 'TestComputer1') OR (NetbiosName = 'TestComputer2')))"
+        }
+
+        It "Return Computer by name using the pipepline" {
+            "TestComputer" | Get-Device | select -ExpandProperty "ClassName" | Should Be "SMS_R_System"
+            "TestComputer" | Get-Device | select -ExpandProperty "Filter" | Should Not Be ""
+            "TestComputer" | Get-Device | select -ExpandProperty "Filter" | Should Be "((Name = 'TestComputer') OR (NetbiosName = 'TestComputer'))"
+        }
+
+        It "Return list of computers by multiple names using the pipeline" {
+            $Computers = @("TestComputer1", "TestComputer2") | Get-Device | select -ExpandProperty "Filter" 
+
+            $Computers.Count | Should be 2
+            $Computers[0] | Should Be "((Name = 'TestComputer1') OR (NetbiosName = 'TestComputer1'))"
+            $Computers[1] | Should Be "((Name = 'TestComputer2') OR (NetbiosName = 'TestComputer2'))"
+        }
+    }
+    #########################
+    #endregion SMS_R_System #
+    #########################
+
+
+    ###########################
+    #region  SMS_Collection   #
+    ###########################
+    Describe "Get-Collection" {
+    
+        Mock Get-CMInstance { 
+            [PSCustomObject]@{ClassName = $ClassName; Filter = $Filter}
+        }
+    
+        It "Throw if no name is supplied" {
+            {Get-Collection -Name ""} | Should Throw
+        } 
+
+        It "Throw if wrong type is supplied" {
+            {Get-Collection -Type CustomType -Name "TestCollection"} | Should Throw
+        } 
+
+        It "Return Collection by ID" {
+            $Collection = Get-Collection -ID "TST00001" 
+            
+            $Collection | select -ExpandProperty "ClassName" | Should Be "SMS_Collection"
+            $Collection.Filter.Contains("(CollectionID = 'TST00001'") | Should Be $true
+        }
+
+        It "Return Collection by Name" {
+            $Collection = Get-Collection -Name "TestCollection" 
+            
+            $Collection | select -ExpandProperty "ClassName" | Should Be "SMS_Collection"
+            $Collection.Filter.Contains("(Name = 'TestCollection'") | Should Be $true
+
+            $Collection = Get-Collection -Type Any -Name "TestCollection" 
+            
+            $Collection | select -ExpandProperty "ClassName" | Should Be "SMS_Collection"
+            $Collection.Filter.Contains("(Name = 'TestCollection'") | Should Be $true
+        }
+
+        It "Search Collection by Name" {
+            $Collection = Get-Collection -Name "%Collection" -Search
+            
+            $Collection | select -ExpandProperty "ClassName" | Should Be "SMS_Collection"
+            $Collection.Filter.Contains("(Name LIKE '%Collection'") | Should Be $true
+
+            $Collection = Get-Collection -Type Any -Name "%Collection" -Search
+            
+            $Collection | select -ExpandProperty "ClassName" | Should Be "SMS_Collection"
+            $Collection.Filter.Contains("(Name LIKE '%Collection'") | Should Be $true
+        }
+
+        It "Search Collection by custom filter " {
+            $Collection = Get-Collection -Filter "(Name LIKE '%Collection')"
+            
+            $Collection | select -ExpandProperty "ClassName" | Should Be "SMS_Collection"
+            $Collection.Filter.Contains("(Name LIKE '%Collection'") | Should Be $true
+        }
+
+        It "Return Device Collection by Name" {
+            $Collection = Get-Collection -Type Device -Name "TestCollection" 
+            
+            $Collection | select -ExpandProperty "ClassName" | Should Be "SMS_Collection"
+            $Collection.Filter.Contains("(CollectionType = 2)") | Should Be $true
+            $Collection.Filter.Contains("(Name = 'TestCollection'") | Should Be $true
+        }
+
+        It "Return User Collection by Name" {
+            $Collection = Get-Collection -Type User -Name "TestCollection" 
+            
+            $Collection | select -ExpandProperty "ClassName" | Should Be "SMS_Collection"
+            $Collection.Filter.Contains("(CollectionType = 1)") | Should Be $true
+            $Collection.Filter.Contains("(Name = 'TestCollection'") | Should Be $true
+        }
+
+        It "Return Other Collection by Name" {
+            $Collection = Get-Collection -Type Other -Name "TestCollection" 
+            
+            $Collection | select -ExpandProperty "ClassName" | Should Be "SMS_Collection"
+            $Collection.Filter.Contains("(CollectionType = 0)") | Should Be $true
+            $Collection.Filter.Contains("(Name = 'TestCollection'") | Should Be $true
+        }
+    }
+    ########################
+    #region SMS_Collection #
+    ########################
+
+    ####################################
+    #region  SMS_ObjectContainerNode   #
+    ####################################
     Describe "Move-CMObject" {
 
         Context "No connection" {
@@ -540,7 +682,7 @@ InModuleScope ConfigMgr {
             $TestFolder | select -ExpandProperty "Arguments" | %{$_.Name} | Should Be "TestFolder"
             $TestFolder | select -ExpandProperty "Arguments" | %{$_.ObjectType} | Should Be 23
             $TestFolder | select -ExpandProperty "Arguments" | %{$_.ParentContainerNodeid} | Should Be 0
-            New-Folder -Name "TestFolder" -Type "DriverPackage" -ParentFolderID 1| select -ExpandProperty "Arguments" | %{$_.ParentContainerNodeid} | Should Be 1
+            New-Folder -Name "TestFolder" -Type "DriverPackage" -ParentFolderID 1 -PassThru| select -ExpandProperty "Arguments" | %{$_.ParentContainerNodeid} | Should Be 1
         }
 
         It "Use correct object type" {
@@ -565,7 +707,14 @@ InModuleScope ConfigMgr {
         }
 
     }
+    #################################
+    #region SMS_ObjectContainerNode #
+    #################################
 
+
+    ####################################
+    #region  SMS_TaskSequencePackage   #
+    ####################################
     Describe Get-TaskSequencePackage {
 
         Get-CimSession | Remove-CimSession
@@ -621,7 +770,7 @@ InModuleScope ConfigMgr {
         }
 
         It "Create new TaskSequencePackage" {
-            $TestPackage = New-TaskSequencePackage -Name "New TaskSequencePackage" -Description "Test Description" -TaskSequence 
+            $TestPackage = New-TaskSequencePackage -Name "New TaskSequencePackage" -Description "Test Description" -TaskSequence @{Name="Test"}
 
             $TestPackage | select -ExpandProperty "Class" | Should Be "SMS_TaskSequencePackage"
             $TestPackage | select -ExpandProperty "Arguments" | %{$_.Name} | Should Be "New TaskSequencePackage"
@@ -629,8 +778,13 @@ InModuleScope ConfigMgr {
         } 
 
     }
+    ####################################
+    #endregion SMS_TaskSequencePackage #
+    ####################################
 
-
+    #############################
+    #region  SMS_TaskSequence   #
+    #############################
     Describe Get-TaskSequence {
 
         Get-CimSession | Remove-CimSession
@@ -669,5 +823,114 @@ InModuleScope ConfigMgr {
             $TestSequence |  %{$_.TaskSequencePackage.ClassName} | Should Be "SMS_TaskSequencePackage"
         } 
     }
+    #############################
+    #endregion SMS_TaskSequence #
+    #############################
+
+    ################################
+    #region  SMS_ClientOperation   #
+    ################################
+    Describe "Get-ClientOperation" {
+    
+        Mock Get-CMInstance { [PSCustomObject]@{ClassName = $ClassName; Filter = $Filter} }
+    
+        It "Return Client Operations" {
+            Get-ClientOperation | select -ExpandProperty "ClassName" | Should Be "SMS_ClientOperation"
+            Get-ClientOperation | select -ExpandProperty "Filter" | Should Be ""
+            Get-ClientOperation -Expired | select -ExpandProperty "Filter" | Should Be "((State = 0) OR (State = 2))"
+        }
+    }
+
+    Describe "Start-ClientOperation" {    
+        Mock Invoke-CMMethod { [PSCustomObject]@{ReturnValue = 0; ClassName = $ClassName; MethodName = $MethodName; Arguments = $Arguments} }
+
+        It "Throw if Operation is invalid or no CollectionID supplied" {        
+            {Start-ClientOperation -Operation "" -CollectionID "XXX00001" } | Should Throw
+            {Start-ClientOperation -Operation FullScan -CollectionID "" } | Should Throw
+        }
+      
+        It "Invoke correct WMI Method" {
+            Start-ClientOperation -Operation FullScan -CollectionID "XXX00001" | select -ExpandProperty "ClassName" | Should Be "SMS_ClientOperation"
+            Start-ClientOperation -Operation FullScan -CollectionID "XXX00001" | select -ExpandProperty "MethodName" | Should Be "InitiateClientOperation"
+        }
+
+        It "Use supplied CollectionID" {
+            Start-ClientOperation -Operation FullScan -CollectionID "XXX00001" | select -ExpandProperty "Arguments" | %{$_.TargetCollectionID} |  Should Be "XXX00001"
+        }
+
+        It "Use supplied ResourceID" {
+            Start-ClientOperation -Operation FullScan -CollectionID "XXX00001" -ResourceID 42| select -ExpandProperty "Arguments" | %{$_.TargetResourceIDs}  | Should Be "42"
+
+            $ResourceIDs = Start-ClientOperation -Operation FullScan -CollectionID "XXX00001" -ResourceID 42,43,44| select -ExpandProperty "Arguments" | %{$_.TargetResourceIDs} 
+            $ResourceIDs.Count | Should Be 3
+            $ResourceIDs | Should Be ("42", "43", "44")
+        }
+
+        It "Use correct Operation" {
+            Start-ClientOperation -Operation FullScan -CollectionID "XXX00001" | select -ExpandProperty "Arguments" |  %{$_.Type} | Should Be "1"
+            Start-ClientOperation -Operation QuickScan -CollectionID "XXX00001" | select -ExpandProperty "Arguments" | %{$_.Type} | Should Be "2"
+            Start-ClientOperation -Operation DownloadDefinition -CollectionID "XXX00001" | select -ExpandProperty "Arguments" | %{$_.Type} | Should Be "3"
+            Start-ClientOperation -Operation EvaluateSoftwareUpdates -CollectionID "XXX00001" | select -ExpandProperty "Arguments" | %{$_.Type} | Should Be "4"
+            Start-ClientOperation -Operation RequestComputerPolicy -CollectionID "XXX00001" | select -ExpandProperty "Arguments" | %{$_.Type} | Should Be "8"
+            Start-ClientOperation -Operation RequestUserPolicy -CollectionID "XXX00001" | select -ExpandProperty "Arguments" | %{$_.Type} | Should Be "9"
+        }
+    }
+
+    Describe "Stop-ClientOperation" {
+    
+        Mock Invoke-CMMethod { [PSCustomObject]@{ReturnValue = 0; ClassName = $ClassName; MethodName = $MethodName; Arguments = $Arguments} }
+      
+        It "Invoke correct WMI Method" {
+            Stop-ClientOperation -OperationID 42 | select -ExpandProperty "ClassName" | Should Be "SMS_ClientOperation"
+            Stop-ClientOperation -OperationID 42| select -ExpandProperty "MethodName" | Should Be "CancelClientOperation"
+        }
+
+        It "Use correct OperationID" {
+            Stop-ClientOperation -OperationID 42| select -ExpandProperty "Arguments" | %{$_.OperationID} | Should Be 42
+            Stop-ClientOperation -OperationID 42,43,44 | select -ExpandProperty "Arguments" -First 1 | %{$_.OperationID} | Should Be 42
+            Stop-ClientOperation -OperationID 42,43,44 | select -ExpandProperty "Arguments" -Last 1 | %{$_.OperationID} | Should Be 44
+        }
+
+        It "Invoke correct WMI Method by pipeline" {
+            42 | Stop-ClientOperation | select -ExpandProperty "ClassName" | Should Be "SMS_ClientOperation"
+            42 | Stop-ClientOperation | select -ExpandProperty "MethodName" | Should Be "CancelClientOperation"
+        }
+
+        It "Use correct OperationID by pipeline" {
+            42 | Stop-ClientOperation | select -ExpandProperty "Arguments" | %{$_.OperationID} | Should Be 42
+            @(42,43,44) | Stop-ClientOperation | select -ExpandProperty "Arguments" -First 1 | %{$_.OperationID} | Should Be 42
+            @(42,43,44) | Stop-ClientOperation | select -ExpandProperty "Arguments" -Last 1 | %{$_.OperationID} | Should Be 44
+        }
+    }
+
+    Describe "Remove-ClientOperation" {
+    
+        Mock Invoke-CMMethod { [PSCustomObject]@{ReturnValue = 0; ClassName = $ClassName; MethodName = $MethodName; Arguments = $Arguments} }
+      
+        It "Invoke correct WMI Method" {
+            Remove-ClientOperation -OperationID 42 | select -ExpandProperty "ClassName" | Should Be "SMS_ClientOperation"
+            Remove-ClientOperation -OperationID 42| select -ExpandProperty "MethodName" | Should Be "DeleteClientOperation"
+        }
+
+        It "Use correct OperationID" {
+            Remove-ClientOperation -OperationID 42| select -ExpandProperty "Arguments" | %{$_.OperationID} | Should Be 42
+            Remove-ClientOperation -OperationID 42,43,44 | select -ExpandProperty "Arguments" -First 1 | %{$_.OperationID} | Should Be 42
+            Remove-ClientOperation -OperationID 42,43,44 | select -ExpandProperty "Arguments" -Last 1 | %{$_.OperationID} | Should Be 44
+        }
+
+        It "Invoke correct WMI Method by pipeline" {
+            42 | Remove-ClientOperation | select -ExpandProperty "ClassName" | Should Be "SMS_ClientOperation"
+            42 | Remove-ClientOperation | select -ExpandProperty "MethodName" | Should Be "DeleteClientOperation"
+        }
+
+        It "Use correct OperationID by pipeline" {
+            42 | Remove-ClientOperation | select -ExpandProperty "Arguments" | %{$_.OperationID} | Should Be 42
+            @(42,43,44) | Remove-ClientOperation | select -ExpandProperty "Arguments" -First 1 | %{$_.OperationID} | Should Be 42
+            @(42,43,44) | Remove-ClientOperation | select -ExpandProperty "Arguments" -Last 1 | %{$_.OperationID} | Should Be 44
+        }
+    }
+    ################################
+    #endregion SMS_ClientOperation #
+    ################################
 
 }
