@@ -300,10 +300,10 @@ function New-CMInstance {
         [ValidateNotNullOrEmpty()]
         [string]$ClassName,
 
-        # Specifies the Arguments to be supplied to the new object
+        # Specifies the properties to be supplied to the new object
         [Parameter(Mandatory)]
         [ValidateNotNullOrEmpty()]
-        [hashtable]$Arguments,
+        [hashtable]$Property,
 
         # Set EnforceWMI to enforce the deprecated WMI cmdlets
         # still required for e.g. embedded classes without key as they need to be handled differently
@@ -323,33 +323,47 @@ function New-CMInstance {
 
         # Ensure ConfigMgr Provider information is available
         if (Test-CMConnection) {
-            $ArgumentsString = ($Arguments.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join "; "
-            Write-Debug "Create new $ClassName object. Arguments: $ArgumentsString"
+            $PropertyString = ($Property.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join "; "
+            Write-Debug "Create new $ClassName object. Properties: $PropertyString"
 
             if ($EnforceWMI) {
                 $NewCMObject = New-CMWMIInstance -ClassName $ClassName
                 if ($NewCMObject -ne $null) {
                     #try to update supplied arguments
                     try {
-                        Write-Debug "Add Arguments to WMI class"
-                        $Arguments.GetEnumerator() | ForEach-Object {
+                        Write-Debug "Add Properties to WMI class"
+                        $Property.GetEnumerator() | ForEach-Object {
                             $Key = $_.Key
                             $Value = $_.Value
                             Write-Debug "$Key : $Value"
                             $NewCMObject[$Key] = $Value
                         }
                     } catch {
-                        Write-Error "Unable to update Arguments on wmi class $ClassName"
+                        Write-Error "Unable to update Properties on WMI class $ClassName"
                     }
                 }
             } else {
                 if ($ClientOnly.IsPresent) {
                     if ($PSCmdlet.ShouldProcess("Class: $ClassName", "Call New-CimInstance")) {
                         $NewCMObject = Invoke-CimCommand {New-Object CimInstance $global:CMSession.GetClass($global:CMNamespace, $ClassName) -ErrorAction Stop}
+                        if ($NewCMObject -ne $null) {
+                            #try to update supplied arguments
+                            try {
+                                Write-Debug "Add Properties to WMI class"
+                                $Property.GetEnumerator() | ForEach-Object {
+                                    $Key = $_.Key
+                                    $Value = $_.Value
+                                    Write-Debug "$Key : $Value"
+                                    $NewCMObject[$Key] = $Value
+                                }
+                            } catch {
+                                Write-Error "Unable to update Properties on WMI class $ClassName"
+                            }
+                        }
                     }
                 }
                 if ($PSCmdlet.ShouldProcess("Class: $ClassName", "Call New-CimInstance")) {
-                    $NewCMObject = Invoke-CimCommand {New-CimInstance -CimSession $global:CMSession -Namespace $global:CMNamespace -ClassName $ClassName -Property $Arguments -ErrorAction Stop}
+                    $NewCMObject = Invoke-CimCommand {New-CimInstance -CimSession $global:CMSession -Namespace $global:CMNamespace -ClassName $ClassName -Property $Property -ErrorAction Stop}
 
                     if ($NewCMObject -ne $null) {
                         # Ensure that generated properties are udpated
@@ -385,7 +399,7 @@ function Set-CMInstance {
 
         # Specifies the properties to be set on the instance.
         # Should be a hashtable with key/name pairs.
-        [hashtable]$Arguments,
+        [hashtable]$Property,
 
         # Specifies if updated object shall be returned
         [switch]$PassThru
@@ -404,7 +418,7 @@ function Set-CMInstance {
 
             if ($ClassInstance -ne $null) {
                 $Params = @{
-                    Property = $Arguments
+                    Property = $Property
                     ErrorAction = "Stop"
                 }
                 if ($PassThru.IsPresent) {$Params.PassThru = $PassThru}
@@ -795,14 +809,14 @@ function New-Category {
             $Colon = ":"
             $UniqueID = "$TypeName$Colon$CategoryGuid"
 
-            $Arguments = @{
+            $Properties = @{
                 CategoryInstance_UniqueID = $UniqueID; 
                 SourceSite = $script:CMSiteCode; 
                 CategoryTypeName = "$TypeName"
                 LocalizedInformation = $LocalizedSettings
             }
         
-            New-CMInstance -Class SMS_CategoryInstance -Arguments $Arguments
+            New-CMInstance -Class SMS_CategoryInstance -Property $Properties
         }
     }
 }
@@ -889,7 +903,7 @@ function Add-CategoryToObject {
                 if ($InputObject.CategoryInstance_UniqueIDs -notcontains $Category.CategoryInstance_UniqueID) {
                     $InputObject.CategoryInstance_UniqueIDs += $Category.CategoryInstance_UniqueID
 
-                    $InputObject = Set-CMInstance -ClassInstance $InputObject -Arguments $Arguments
+                    $InputObject = Set-CMInstance -ClassInstance $InputObject #-Property $Arguments
                 
                 } else {
                     # already available
@@ -1260,7 +1274,7 @@ Function New-TaskSequencePackage {
         [string]$Description = "",
 
         # Specifies additional Properties
-        [Hashtable]$Properties,
+        [Hashtable]$Property,
 
         [switch]$PassThru
     )
@@ -1277,14 +1291,14 @@ Function New-TaskSequencePackage {
 
         if ($Properties -ne $null) {
             # Remove Name and Description from the supplied properties, as supplied named parameters will be used instead
-            if ($Properties.ContainsKey("Name")) {$Properties.Remove("Name")}
-            if (($Properties.ContainsKey("Description")) -and ([string]::IsNullOrEmpty($Description))) {$Properties.Remove("Description")}
+            if ($Property.ContainsKey("Name")) {$Property.Remove("Name")}
+            if (($Property.ContainsKey("Description")) -and ([string]::IsNullOrEmpty($Description))) {$Property.Remove("Description")}
             $Arguments = $Arguments + $Properties
         }
 
         # Create local instance of SMS_TaskSequencePackage
         Write-Verbose "Create new Task Sequence Package '$Name'"
-        $TaskSequencePackage = Invoke-CimCommand {New-CimInstance -ClassName "SMS_TaskSequencePackage" -Arguments $Arguments -Namespace $Global:CMNamespace -ClientOnly -ErrorAction Stop}
+        $TaskSequencePackage = Invoke-CimCommand {New-CimInstance -ClassName "SMS_TaskSequencePackage" -Property $Arguments -Namespace $Global:CMNamespace -ClientOnly -ErrorAction Stop}
 
         # Invoke SetSequence to add the sequence and create the package
         Write-Verbose "Add Task Sequence to new Task Sequence Package"
