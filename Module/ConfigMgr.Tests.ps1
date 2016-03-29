@@ -532,6 +532,84 @@ InModuleScope ConfigMgr {
     #region SMS_Collection #
     ########################
 
+
+    #################################
+    #region  SMS_CategoryInstance   #
+    #################################
+    Describe "Get-Category" {
+    
+        Mock Get-CMInstance { [PSCustomObject]@{ClassName = $ClassName; Filter = $Filter} }
+    
+        It "Throw if no name is supplied" {
+            {Get-Category -Name ""} | Should Throw
+        } 
+
+        It "Return Category by ID" {
+            $TestCategory = Get-Category -ID 42 
+            $TestCategory | select -ExpandProperty "ClassName" | Should Be "SMS_CategoryInstance"
+            $TestCategory | select -ExpandProperty "Filter" | Should Be "((CategoryInstanceID = 42))"
+        }
+
+        It "Return Category by name" {
+            $TestCategory = Get-Category -Name "TestCategory" 
+            $TestCategory | select -ExpandProperty "ClassName" | Should Be "SMS_CategoryInstance"
+            $TestCategory | select -ExpandProperty "Filter" | Should Be "((LocalizedCategoryInstanceName = 'TestCategory'))"
+        }
+
+        It "Return list of Categories by multiple names" {
+            $Categories = Get-Category -Name "TestCategory1", "TestCategory2" | select -ExpandProperty "Filter" 
+            $Categories | Should Be "(((LocalizedCategoryInstanceName = 'TestCategory1') OR (LocalizedCategoryInstanceName = 'TestCategory2')))"
+        }
+
+        It "Return Category by name using the pipepline" {
+            $Category = "TestCategory" | Get-Category 
+            $Category | select -ExpandProperty "ClassName" | Should Be "SMS_CategoryInstance"
+            $Category | select -ExpandProperty "Filter" | Should Be "((LocalizedCategoryInstanceName = 'TestCategory'))"
+        }
+
+        It "Return list of Categories by multiple names using the pipeline" {
+            $Categories = @("TestCategory1", "TestCategory2") | Get-Category | select -ExpandProperty "Filter" 
+
+            $Categories.Count | Should be 2
+            $Categories[0] | Should Be "((LocalizedCategoryInstanceName = 'TestCategory1'))"
+            $Categories[1] | Should Be "((LocalizedCategoryInstanceName = 'TestCategory2'))"
+        }
+
+        It "Return Categories by ParentID" {
+            $TestCategory = Get-Category -Name "%" -Search -ParentID 42 
+            $TestCategory | select -ExpandProperty "ClassName" | Should Be "SMS_CategoryInstance"
+            $TestCategory | select -ExpandProperty "Filter" | Should Be "((LocalizedCategoryInstanceName LIKE '%') AND (ParentCategoryInstanceID = 42))"
+        }
+
+        It "Return Categories by Type" {
+            $TestCategory = Get-Category -Name "%" -Search -TypeName DriverCategories
+            $TestCategory | select -ExpandProperty "ClassName" | Should Be "SMS_CategoryInstance"
+            $TestCategory | select -ExpandProperty "Filter" | Should Be "((LocalizedCategoryInstanceName LIKE '%') AND (CategoryTypeName = 'DriverCategories'))"
+        }
+
+        It "Return Categories by custom filter" {
+            $TestCategory = Get-Category -Filter "LocalizedCategoryInstanceName LIKE '%'"
+            $TestCategory | select -ExpandProperty "ClassName" | Should Be "SMS_CategoryInstance"
+            $TestCategory | select -ExpandProperty "Filter" | Should Be "(LocalizedCategoryInstanceName LIKE '%')"
+        }
+    }
+
+    Describe "New-Category" {
+        It "Tests are implemented"{
+            $False | Should be $True
+        }
+    }
+
+    Describe "Remove-Category" {
+        It "Tests are implemented" {
+            $False | Should be $True
+        }
+    }
+    #################################
+    #endregion SMS_CategoryInstance #
+    #################################
+
+
     ####################################
     #region  SMS_ObjectContainerNode   #
     ####################################
@@ -707,9 +785,9 @@ InModuleScope ConfigMgr {
         }
 
     }
-    #################################
-    #region SMS_ObjectContainerNode #
-    #################################
+    ####################################
+    #endregion SMS_ObjectContainerNode #
+    ####################################
 
 
     ####################################

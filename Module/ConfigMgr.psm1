@@ -300,14 +300,18 @@ function New-CMInstance {
         [ValidateNotNullOrEmpty()]
         [string]$ClassName,
 
-        # Specifies the Arguments to be supplied to the new object
+        # Specifies the properties to be supplied to the new object
         [Parameter(Mandatory)]
         [ValidateNotNullOrEmpty()]
-        [hashtable]$Arguments,
+        [hashtable]$Property,
 
         # Set EnforceWMI to enforce the deprecated WMI cmdlets
         # still required for e.g. embedded classes without key as they need to be handled differently
-        [switch]$EnforceWMI
+        [switch]$EnforceWMI,
+
+        # Specifies if the new instance shall be created on the client only.
+        # Will be used for embedded classes without key property
+        [switch]$ClientOnly
     )
 
     Begin {
@@ -319,28 +323,47 @@ function New-CMInstance {
 
         # Ensure ConfigMgr Provider information is available
         if (Test-CMConnection) {
-            $ArgumentsString = ($Arguments.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join "; "
-            Write-Debug "Create new $ClassName object. Arguments: $ArgumentsString"
+            $PropertyString = ($Property.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join "; "
+            Write-Debug "Create new $ClassName object. Properties: $PropertyString"
 
             if ($EnforceWMI) {
                 $NewCMObject = New-CMWMIInstance -ClassName $ClassName
                 if ($NewCMObject -ne $null) {
                     #try to update supplied arguments
                     try {
-                        Write-Debug "Add Arguments to WMI class"
-                        $Arguments.GetEnumerator() | ForEach-Object {
+                        Write-Debug "Add Properties to WMI class"
+                        $Property.GetEnumerator() | ForEach-Object {
                             $Key = $_.Key
                             $Value = $_.Value
                             Write-Debug "$Key : $Value"
                             $NewCMObject[$Key] = $Value
                         }
                     } catch {
-                        Write-Error "Unable to update Arguments on wmi class $ClassName"
+                        Write-Error "Unable to update Properties on WMI class $ClassName"
                     }
                 }
             } else {
+                if ($ClientOnly.IsPresent) {
+                    if ($PSCmdlet.ShouldProcess("Class: $ClassName", "Call New-CimInstance")) {
+                        $NewCMObject = Invoke-CimCommand {New-Object CimInstance $global:CMSession.GetClass($global:CMNamespace, $ClassName) -ErrorAction Stop}
+                        if ($NewCMObject -ne $null) {
+                            #try to update supplied arguments
+                            try {
+                                Write-Debug "Add Properties to WMI class"
+                                $Property.GetEnumerator() | ForEach-Object {
+                                    $Key = $_.Key
+                                    $Value = $_.Value
+                                    Write-Debug "$Key : $Value"
+                                    $NewCMObject[$Key] = $Value
+                                }
+                            } catch {
+                                Write-Error "Unable to update Properties on WMI class $ClassName"
+                            }
+                        }
+                    }
+                }
                 if ($PSCmdlet.ShouldProcess("Class: $ClassName", "Call New-CimInstance")) {
-                    $NewCMObject = Invoke-CimCommand {New-CimInstance -CimSession $global:CMSession -Namespace $global:CMNamespace -ClassName $ClassName -Property $Arguments -ErrorAction Stop}
+                    $NewCMObject = Invoke-CimCommand {New-CimInstance -CimSession $global:CMSession -Namespace $global:CMNamespace -ClassName $ClassName -Property $Property -ErrorAction Stop}
 
                     if ($NewCMObject -ne $null) {
                         # Ensure that generated properties are udpated
@@ -356,26 +379,30 @@ function New-CMInstance {
 
 # Updates a ConfigMgr object
 function Set-CMInstance {
-    [CmdletBinding(SupportsShouldProcess,DefaultParameterSetName="ClassInstance")]
+    [CmdletBinding(SupportsShouldProcess,DefaultParameterSetName="Instance")]
     PARAM (
         # Specifies the ConfigMgr WMI provider Class Name
-        [Parameter(Mandatory,ParameterSetName="ClassName")] 
+        [Parameter(Mandatory,ParameterSetName="Name")] 
         [ValidateNotNullOrEmpty()]
         [string]$ClassName,
 
         # Specifies the Filter
-        [Parameter(Mandatory,ParameterSetName="ClassName")] 
+        [Parameter(Mandatory,ParameterSetName="Name")] 
         [ValidateNotNullOrEmpty()]
         [string]$Filter,
             
         # Specifies the ConfigMgr WMI provider object
-        [Parameter(Mandatory,ParameterSetName="ClassInstance")] 
+        [Parameter(Mandatory,ParameterSetName="Instance",ValueFromPipeline,ValueFromPipelineByPropertyName)] 
         [ValidateNotNullOrEmpty()]
-        [object]$ClassInstance,  
+        [Alias("ClassInstance")]
+        [object]$InputObject,  
 
-        # Specifies the arguments to be set on the instance.
+        # Specifies the properties to be set on the instance.
         # Should be a hashtable with key/name pairs.
-        [hashtable]$Arguments
+        [hashtable]$Property,
+
+        # Specifies if updated object shall be returned
+        [switch]$PassThru
     )
 
     Begin {
@@ -385,17 +412,26 @@ function Set-CMInstance {
     Process {
         # Ensure ConfigMgr Provider information is available
         if (Test-CMConnection) {
-            if ($ClassInstance -eq $null) {
+            if ($PSCmdlet.ParameterSetName -eq "Name") {
                 $ClassInstance = Get-CMInstance -Class $ClassName -Filter $Filter
             }
 
             if ($ClassInstance -ne $null) {
-                if ($Arguments -eq $null) {
-                    $ClassInstance | Invoke-CimCommand {Set-CimInstance -PassThru -ErrorAction Stop}
-                } else {
-                    $ClassInstance | Invoke-CimCommand {Set-CimInstance -Property $Arguments -PassThru -ErrorAction Stop}
+                $Params = @{
+                    Property = $Property
+                    ErrorAction = "Stop"
                 }
-            } 
+                if ($PassThru.IsPresent) {$Params.PassThru = $PassThru}
+
+                $ClassInstance | Invoke-CimCommand {Set-CimInstance $Params}
+                #if ($Arguments -eq $null) {
+                #    $ClassInstance | Invoke-CimCommand {Set-CimInstance -PassThru:($PassThru.IsPresent) -ErrorAction Stop}
+                #} else {
+                #    $ClassInstance | Invoke-CimCommand {Set-CimInstance -Property $Arguments -PassThru -ErrorAction Stop}
+                #}
+            } else {
+                Write-Error "No object supplied."
+            }
         }
     }
 }
@@ -663,6 +699,304 @@ function Get-Collection {
 ##########################
 #endregion SMS_Colletion #
 ##########################
+
+
+#################################
+#region  SMS_CategoryInstance   #
+#################################
+
+# Returns a ConfigMgr Category
+function Get-Category {
+    [CmdLetBinding(DefaultParameterSetName="Name")]
+    PARAM(
+        # Specifies the ResourceID
+        [Parameter(Mandatory, ParameterSetName="ID", ValueFromPipelineByPropertyName)]
+        [ValidateNotNullOrEmpty()]
+        [Alias("CategoryInstanceID")]
+        [uint32[]]$ID,
+
+        # Specifies the Computer Name
+        [Parameter(Mandatory, ParameterSetName="Name",ValueFromPipeline,ValueFromPipelineByPropertyName)]
+        [ValidateNotNullOrEmpty()]
+        [Alias("CategoryName", "LocalizedCategoryInstanceName")]
+        [string[]]$Name,
+
+        # Specifies the CategoryinstanceID of the Parent Category
+        [Parameter(ParameterSetName="Name",ValueFromPipelineByPropertyName)]
+        [Alias("ParentCategoryInstanceID")]
+        [uint32]$ParentID,
+
+        # Specifies the Category Type
+        [Parameter(ParameterSetname="Name",ValueFromPipelineBypropertyName)]
+        [ValidateSet("Locale", "UpdateClassification", "Company", "ProductFamily", "UserCategories", "GlobalCondition", "Device", "Platform", "AppCategories", "Update Type", "CatalogCategories", "DriverCategories", "SettingsAndPolicy")]
+        [Alias("CategoryTypeName")]
+        [string]$TypeName,
+
+        # Specifies if Name contains a search string
+        [Parameter(ParameterSetName="Name")]
+        [switch]$Search,
+
+        # Specifies a custom filter to use
+        [Parameter(Mandatory,ParameterSetName="Filter", ValueFromPipelineByPropertyName)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Filter
+    )
+
+    Begin {
+        Get-CallerPreference -Cmdlet $PSCmdlet -SessionState $ExecutionContext.SessionState 
+    }
+
+    Process {
+        # Prepare filter
+        $CategoryFilter = @()
+
+        if ($PSCmdlet.ParameterSetName -eq "ID") {
+            $CategoryFilter += New-SearchString -PropertyName "CategoryInstanceID" -IntProperty $ID 
+        } elseif ($PSCmdlet.ParameterSetName -eq "Filter") {
+            $CategoryFilter += $Filter
+        } else {
+            $CategoryFilter += New-SearchString -PropertyName "LocalizedCategoryInstanceName" -StringProperty $Name -Search:($Search.IsPresent)
+            if ($ParentID -gt 0) {
+                $CategoryFilter += New-SearchString -PropertyName "ParentCategoryInstanceID" -IntProperty $ParentID
+            }
+
+            if (-not([string]::IsNullOrEmpty($TypeName))) {
+                $CategoryFilter += New-SearchString -PropertyName "CategoryTypeName" -StringProperty $TypeName
+            }
+        }
+
+        $Filter = "($($CategoryFilter -join ' AND '))"
+        Write-Verbose "Get Category by filter $Filter"
+        Get-CMInstance -ClassName "SMS_CategoryInstance" -Filter $Filter
+    }
+}
+
+# Ceates a new ConfigMgr Category
+function New-Category {
+    [CmdletBinding()]
+    PARAM (
+        # Specifies the Category Name
+        [Parameter(Mandatory, ValueFromPipeline,ValueFromPipelineByPropertyName)]
+        [ValidateNotNullOrEmpty()]
+        [Alias("CategoryName", "LocalizedCategoryInstanceName")]
+        [string]$Name,
+
+        # Specifies the Category Type
+        [Parameter(Mandatory,ValueFromPipelineByPropertyName)]
+        [ValidateSet("Locale", "UpdateClassification", "Company", "ProductFamily", "UserCategories", "GlobalCondition", "Device", "Platform", "AppCategories", "Update Type", "CatalogCategories", "DriverCategories", "SettingsAndPolicy")]
+        [Alias("CategoryTypeName")]
+        [string]$TypeName,
+
+        # Specifies the LocaleID of the Name
+        [string]$LocaleID = 1033
+    )
+
+    Begin {
+        Get-CallerPreference -Cmdlet $PSCmdlet -SessionState $ExecutionContext.SessionState 
+    }
+
+    Process {
+        # Create a local instance of the LocalizedProperties
+        $LocalizedSettings = New-CMInstance -ClassName SMS_Category_LocalizedProperties -ClientOnly
+
+        if ($LocalizedSettings -ne $null) {
+            # Update Localized Properties
+            $LocalizedSettings.CategoryInstanceName = $Name;
+            $LocalizedSettings.LocaleID = $LocaleID
+            
+            # Build the parameters for creating the Category
+            $CategoryGuid = [System.Guid]::NewGuid().ToString()
+            $Colon = ":"
+            $UniqueID = "$TypeName$Colon$CategoryGuid"
+
+            $Properties = @{
+                CategoryInstance_UniqueID = $UniqueID; 
+                SourceSite = $script:CMSiteCode; 
+                CategoryTypeName = "$TypeName"
+                LocalizedInformation = $LocalizedSettings
+            }
+        
+            New-CMInstance -Class SMS_CategoryInstance -Property $Properties
+        }
+    }
+}
+
+# Removes a ConfigMgr Category
+function Remove-Category {
+    [CmdletBinding(SupportsShouldProcess)]
+    PARAM (
+        # Specifies the Category Name
+        [Parameter(Mandatory,ParameterSetname="ID",ValueFromPipeline,ValueFromPipelineByPropertyName)]
+        [ValidateNotNullOrEmpty()]
+        [Alias("CategoryInstanceID")]
+        [uint32[]]$ID,
+
+        # Specifies the Category instance
+        [Parameter(Mandatory,ParameterSetname="Instance",ValueFromPipelineByPropertyname)]
+        [CimInstance]$Category
+    )
+
+    Begin {
+        Get-CallerPreference -Cmdlet $PSCmdlet -SessionState $ExecutionContext.SessionState 
+    }
+
+    Process {
+        if ($PSCmdlet.ParameterSetName -eq "ID") {
+            if ($PSCmdLet.ShouldProcess("SMS_CategoryInstance:CategoryInstanceID=$ID", "Remove Category")) {
+                Remove-CMInstance -ClassName "SMS_CategoryInstance" -Filter "CategoryInstanceID = $ID"
+            }
+        } else {
+            if ($PSCmdLet.ShouldProcess("SMS_CategoryInstance:CategoryInstanceID=$($Category.CategoryInstanceID)", "Remove Category")) {
+                Remove-CMInstance -ClassInstance $Category
+            }
+        }
+    }
+}
+
+# Adds a category to a ConfigMgr object
+# Will fail if the supplied object doesn't contain a CategoryInstance_UniqueIDs property.
+function Add-CategoryToObject {
+    [CmdLetBinding(SupportsShouldProcess)]
+    PARAM (
+        # Specifies the object to which the Category shall be added to
+        [Parameter(Mandatory,ValueFromPipeline)]
+        [ValidateNotNullOrEmpty()]
+        [CimInstance]$InputObject,
+
+        # Specifies the Category                    
+        [Parameter(Mandatory,ParameterSetName="Category",ValueFromPipelineByPropertyName)]
+        [ValidateNotNullOrEmpty()]
+        $Category,
+
+        # Specifies the CategoryInstanceID
+        [Parameter(Mandatory,ParameterSetName="ID",ValueFromPipelineByPropertyName)]
+        [ValidateNotNullOrEmpty()]
+        [Alias("CategoryInstanceID")]
+        $ID,
+
+        # Specifies the Category Name
+        [Parameter(Mandatory,ParameterSetName="Name",ValueFromPipelineByPropertyName)]
+        [ValidateNotNullOrEmpty()]
+        [Alias("CategoryName")]
+        [string]$Name,
+        
+        # Specifies if the updated object shall be returned.
+        [switch]$PassThru
+    )
+
+    Begin {
+        Get-CallerPreference -Cmdlet $PSCmdlet -SessionState $ExecutionContext.SessionState 
+
+        if ($PSCmdlet.ParameterSetName -eq "ID") {
+            $Category = Get-Category -ID $ID
+        } elseif ($PSCmdlet.ParameterSetName -eq "Name") {
+            $Category = Get-Category -Name $CategoryName
+        }
+    }
+
+    Process {
+        if ($Category -ne $null) {
+            Write-Verbose "Add Category $($Category.LocalizedDisplayname) to $($InputObject.ToString())"
+            # Check if current object support categories
+            if ($InputObject.CimInstanceProperties | Where { $_.Name -eq "CategoryInstance_UniqueIDs"}) {
+                # Compare with already assigned categories and add if missing
+                if ($InputObject.CategoryInstance_UniqueIDs -notcontains $Category.CategoryInstance_UniqueID) {
+                    $InputObject.CategoryInstance_UniqueIDs += $Category.CategoryInstance_UniqueID
+
+                    $InputObject = Set-CMInstance -ClassInstance $InputObject #-Property $Arguments
+                
+                } else {
+                    # already available
+                    #Write-Verbose "Category $($Category.LocalizedCategoryInstanceName) was already added to Driver $($Driver.LocalizedDisplayname)"
+                }
+
+                # Write object back to pipeline
+                if ($PassThru.IsPresent) {
+                    $InputObject
+                }
+            } else {
+                Write-Error "$($InputObject.ToString()) doesn't contain CategoryInstance_UniqueIDs property."
+            }
+        } else {
+            Write-Error "Category not supplied."
+        }
+    }
+}
+
+# Removes a category from a ConfigMgr object
+# Will fail if the supplied object doesn't contain a CategoryInstance_UniqueIDs property.
+function Remove-CategoryFromObject {
+    [CmdLetBinding(SupportsShouldProcess)]
+    PARAM (
+        # Specifies the object to which the Category shall be removed from
+        [Parameter(Mandatory,ValueFromPipeline)]
+        [ValidateNotNullOrEmpty()]
+        [CimInstance]$InputObject,
+
+        # Specifies the Category                    
+        [Parameter(Mandatory,ParameterSetName="Category",ValueFromPipelineByPropertyName)]
+        [ValidateNotNullOrEmpty()]
+        $Category,
+
+        # Specifies the CategoryInstanceID
+        [Parameter(Mandatory,ParameterSetName="ID",ValueFromPipelineByPropertyName)]
+        [ValidateNotNullOrEmpty()]
+        [Alias("CategoryInstanceID")]
+        $ID,
+
+        # Specifies the Category Name
+        [Parameter(Mandatory,ParameterSetName="Name",ValueFromPipelineByPropertyName)]
+        [ValidateNotNullOrEmpty()]
+        [Alias("CategoryName")]
+        [string]$Name,
+        
+        # Specifies if the updated object shall be returned.
+        [switch]$PassThru
+    )
+
+    Begin {
+        Get-CallerPreference -Cmdlet $PSCmdlet -SessionState $ExecutionContext.SessionState 
+
+        if ($PSCmdlet.ParameterSetName -eq "ID") {
+            $Category = Get-Category -ID $ID
+        } elseif ($PSCmdlet.ParameterSetName -eq "Name") {
+            $Category = Get-Category -Name $CategoryName
+        }
+    }
+
+    Process {
+        if ($Category -ne $null) {
+            Write-Verbose "Add Category $($Category.LocalizedDisplayname) to $($InputObject.ToString())"
+            # Check if current object support categories
+            if ($InputObject.CimInstanceProperties | Where { $_.Name -eq "CategoryInstance_UniqueIDs"}) {
+                # Compare with assigned categories and remove if available
+                if ($InputObject.CategoryInstance_UniqueIDs -contains $Category.CategoryInstance_UniqueID) {
+                    $InputObject.CategoryInstance_UniqueIDs -= $Category.CategoryInstance_UniqueID
+                    #InputObject.CategoryInstance_UniqueIDs = $InputObject.CategoryInstance_UniqueIDs | Where {$_ -ne $Category.CategoryInstance_UniqueID}
+
+                    $InputObject = Set-CMInstance -ClassInstance $InputObject -Arguments $Arguments
+                
+                } else {
+                    #Not available
+                }
+
+                # Write object back to pipeline
+                if ($PassThru.IsPresent) {
+                    $InputObject
+                }
+            } else {
+                Write-Error "$($InputObject.ToString()) doesn't contain CategoryInstance_UniqueIDs property."
+            }
+        } else {
+            Write-Error "Category not supplied."
+        }
+    }
+}
+
+#################################
+#endregion SMS_CategoryInstance #
+#################################
+
 
 ####################################
 #region  SMS_ObjectContainerNode   #
@@ -941,7 +1275,7 @@ Function New-TaskSequencePackage {
         [string]$Description = "",
 
         # Specifies additional Properties
-        [Hashtable]$Properties,
+        [Hashtable]$Property = {},
 
         [switch]$PassThru
     )
@@ -951,21 +1285,21 @@ Function New-TaskSequencePackage {
     }
 
     Process{
-        $Arguments = @{
-            Name = $Name; 
-            Description = $Description
+        if ($Property -ne $null) {
+            # Remove Name and Description from the supplied properties, as supplied named parameters will be used instead
+            if ($Property.ContainsKey("Name")) {$Property.Remove("Name")}
+            if (($Property.ContainsKey("Description")) -and (-not([string]::IsNullOrEmpty($Description)))) {$Property.Remove("Description")}
+        } else {
+            $Property = @{}
         }
 
-        if ($Properties -ne $null) {
-            # Remove Name and Description from the supplied properties, as supplied named parameters will be used instead
-            if ($Properties.ContainsKey("Name")) {$Properties.Remove("Name")}
-            if (($Properties.ContainsKey("Description")) -and ([string]::IsNullOrEmpty($Description))) {$Properties.Remove("Description")}
-            $Arguments = $Arguments + $Properties
-        }
+        # Add name and Description
+        $Property.Name = $Name
+        if (-not ([string]::IsNullOrEmpty($Description))){ $Property.Description = $Description}
 
         # Create local instance of SMS_TaskSequencePackage
         Write-Verbose "Create new Task Sequence Package '$Name'"
-        $TaskSequencePackage = Invoke-CimCommand {New-CimInstance -ClassName "SMS_TaskSequencePackage" -Arguments $Arguments -Namespace $Global:CMNamespace -ClientOnly -ErrorAction Stop}
+        $TaskSequencePackage = New-CMInstance -ClassName "SMS_TaskSequencePackage" -Property $Property -ClientOnly
 
         # Invoke SetSequence to add the sequence and create the package
         Write-Verbose "Add Task Sequence to new Task Sequence Package"
