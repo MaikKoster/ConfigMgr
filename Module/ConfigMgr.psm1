@@ -972,6 +972,7 @@ function Remove-CategoryFromObject {
                 # Compare with assigned categories and remove if available
                 if ($InputObject.CategoryInstance_UniqueIDs -contains $Category.CategoryInstance_UniqueID) {
                     $InputObject.CategoryInstance_UniqueIDs -= $Category.CategoryInstance_UniqueID
+                    #InputObject.CategoryInstance_UniqueIDs = $InputObject.CategoryInstance_UniqueIDs | Where {$_ -ne $Category.CategoryInstance_UniqueID}
 
                     $InputObject = Set-CMInstance -ClassInstance $InputObject -Arguments $Arguments
                 
@@ -1274,7 +1275,7 @@ Function New-TaskSequencePackage {
         [string]$Description = "",
 
         # Specifies additional Properties
-        [Hashtable]$Property,
+        [Hashtable]$Property = {},
 
         [switch]$PassThru
     )
@@ -1284,21 +1285,21 @@ Function New-TaskSequencePackage {
     }
 
     Process{
-        $Arguments = @{
-            Name = $Name; 
-            Description = $Description
-        }
-
-        if ($Properties -ne $null) {
+        if ($Property -ne $null) {
             # Remove Name and Description from the supplied properties, as supplied named parameters will be used instead
             if ($Property.ContainsKey("Name")) {$Property.Remove("Name")}
-            if (($Property.ContainsKey("Description")) -and ([string]::IsNullOrEmpty($Description))) {$Property.Remove("Description")}
-            $Arguments = $Arguments + $Properties
+            if (($Property.ContainsKey("Description")) -and (-not([string]::IsNullOrEmpty($Description)))) {$Property.Remove("Description")}
+        } else {
+            $Property = @{}
         }
+
+        # Add name and Description
+        $Property.Name = $Name
+        if (-not ([string]::IsNullOrEmpty($Description))){ $Property.Description = $Description}
 
         # Create local instance of SMS_TaskSequencePackage
         Write-Verbose "Create new Task Sequence Package '$Name'"
-        $TaskSequencePackage = Invoke-CimCommand {New-CimInstance -ClassName "SMS_TaskSequencePackage" -Property $Arguments -Namespace $Global:CMNamespace -ClientOnly -ErrorAction Stop}
+        $TaskSequencePackage = New-CMInstance -ClassName "SMS_TaskSequencePackage" -Property $Property -ClientOnly
 
         # Invoke SetSequence to add the sequence and create the package
         Write-Verbose "Add Task Sequence to new Task Sequence Package"
