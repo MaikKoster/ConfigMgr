@@ -246,10 +246,9 @@ function Get-CMInstance {
         # If no filter is supplied, all objects will be returned.
         [string]$Filter,
 
-        # Indicates that the requested class contains lazy properties that shall be returned.
-        # As the CIM CmdLets don't support lazy properties, the objects will be queried using
-        # the deprecated WMI CmdLets.
-        [switch]$ContainsLazy
+        # Specifies if the lazy properties shall be fetched as well.
+        # On default, lazy properties won't be included in the result.
+        [switch]$IncludeLazy
     )
 
     Begin {
@@ -262,7 +261,7 @@ function Get-CMInstance {
         # Ensure ConfigMgr Provider information is available
         if (Test-CMConnection) {
 
-            if (($Filter.Contains(" JOIN ")) -or ($ContainsLazy.IsPresent)) {
+            if ($Filter.Contains(" JOIN ")) {
                 Write-Verbose "Fall back to WMI cmdlets"                
                 $WMIParams = @{
                     ComputerName = $global:CMProviderServer;
@@ -284,7 +283,13 @@ function Get-CMInstance {
                     $InstanceParams.Filter = $Filter
                 }
 
-                Invoke-CimCommand {Get-CimInstance @InstanceParams -ErrorAction Stop}
+                $Result = Invoke-CimCommand {Get-CimInstance @InstanceParams -ErrorAction Stop}
+
+                if ($IncludeLazy.IsPresent) {
+                    $Result = Invoke-CimCommand {$Result | Get-CimInstance -ErrorAction Stop}
+                }
+
+                $Result
             }
         }
     }
@@ -343,33 +348,50 @@ function New-CMInstance {
                     }
                 }
             } else {
-                if ($ClientOnly.IsPresent) {
-                    if ($PSCmdlet.ShouldProcess("Class: $ClassName", "Call New-CimInstance")) {
-                        $NewCMObject = Invoke-CimCommand {New-Object CimInstance $global:CMSession.GetClass($global:CMNamespace, $ClassName) -ErrorAction Stop}
-                        if ($NewCMObject -ne $null) {
-                            #try to update supplied arguments
-                            try {
-                                Write-Debug "Add Properties to WMI class"
-                                $Property.GetEnumerator() | ForEach-Object {
-                                    $Key = $_.Key
-                                    $Value = $_.Value
-                                    Write-Debug "$Key : $Value"
-                                    $NewCMObject[$Key] = $Value
-                                }
-                            } catch {
-                                Write-Error "Unable to update Properties on WMI class $ClassName"
-                            }
-                        }
-                    }
+                $Params = @{
+                    Namespace = $Global:CMNamespace
+                    ClassName = $ClassName
+                    Property = $Property
+                    ErrorAction = "Stop"
                 }
-                if ($PSCmdlet.ShouldProcess("Class: $ClassName", "Call New-CimInstance")) {
-                    $NewCMObject = Invoke-CimCommand {New-CimInstance -CimSession $global:CMSession -Namespace $global:CMNamespace -ClassName $ClassName -Property $Property -ErrorAction Stop}
 
+                if ($ClientOnly.IsPresent) {
+                    $Params.ClientOnly = $true
+                } else {
+                    $Params.CimSession = $global:CMSession
+                }
+
+                if ($PSCmdlet.ShouldProcess("Class: $ClassName", "Call New-CimInstance")) {
+                    $NewCMObject = Invoke-CimCommand { New-CimInstance @Params}
+                    
                     if ($NewCMObject -ne $null) {
                         # Ensure that generated properties are udpated
                         $hack = $NewCMObject.PSBase | Select-Object * | Out-Null
                     }
                 }
+                
+                
+                #if ($ClientOnly.IsPresent) {
+                #    if ($PSCmdlet.ShouldProcess("Class: $ClassName", "Call New-CimInstance")) {
+                #        $NewCMObject = Invoke-CimCommand {New-CimInstance -Namespace $global:CMNamespace -ClassName $ClassName -Property $Property -ErrorAction Stop -ClientOnly}
+                        #$NewCMObject = Invoke-CimCommand {New-Object CimInstance $global:CMSession.GetClass($global:CMNamespace, $ClassName) -ErrorAction Stop}
+                        #if ($NewCMObject -ne $null) {
+                        #    #try to update supplied arguments
+                        #    try {
+                        #        Write-Debug "Add Properties to WMI class"
+                        #        $Property.GetEnumerator() | ForEach-Object {
+                        #            $Key = $_.Key
+                        #            $Value = $_.Value
+                        #            Write-Debug "$Key : $Value"
+                        #            $NewCMObject[$Key] = $Value
+                        #        }
+                        #    } catch {
+                        #        Write-Error "Unable to update Properties on WMI class $ClassName"
+                        #    }
+                        #}
+                #    }
+                #}
+                
             }
 
             Return $NewCMObject
@@ -797,26 +819,26 @@ function New-Category {
 
     Process {
         # Create a local instance of the LocalizedProperties
-        $LocalizedSettings = New-CMInstance -ClassName SMS_Category_LocalizedProperties -ClientOnly
+        $LocalizedProperties = @{
+            CategoryInstanceName = $Name
+            LocaleID = $LocaleID
+        }
+        $LocalizedSettings = New-CMInstance -ClassName SMS_Category_LocalizedProperties -ClientOnly -Property $LocalizedProperties
 
         if ($LocalizedSettings -ne $null) {
-            # Update Localized Properties
-            $LocalizedSettings.CategoryInstanceName = $Name;
-            $LocalizedSettings.LocaleID = $LocaleID
-            
             # Build the parameters for creating the Category
             $CategoryGuid = [System.Guid]::NewGuid().ToString()
             $Colon = ":"
             $UniqueID = "$TypeName$Colon$CategoryGuid"
 
-            $Properties = @{
+            $CategoryProperties = @{
                 CategoryInstance_UniqueID = $UniqueID; 
                 SourceSite = $script:CMSiteCode; 
                 CategoryTypeName = "$TypeName"
                 LocalizedInformation = $LocalizedSettings
             }
         
-            New-CMInstance -Class SMS_CategoryInstance -Property $Properties
+            New-CMInstance -Class SMS_CategoryInstance -Property $CategoryProperties
         }
     }
 }
@@ -1239,7 +1261,8 @@ Function Get-TaskSequencePackage {
         [ValidateNotNullOrEmpty()]
         [string]$Name,
 
-        [switch]$IncludeLazyProperties
+        [Alias("IncludeLazyProperties")]
+        [switch]$IncludeLazy
 
     )
         
@@ -1250,10 +1273,10 @@ Function Get-TaskSequencePackage {
     Process{
         if (!([string]::IsNullOrEmpty($ID))) {
             Write-Verbose "Get Task Sequence Package by PackageID '$ID'."
-            Get-CMInstance -ClassName "SMS_TaskSequencePackage" -Filter "PackageID='$ID'" -ContainsLazy:$IncludeLazyProperties
+            Get-CMInstance -ClassName "SMS_TaskSequencePackage" -Filter "PackageID='$ID'" -IncludeLazy:($IncludeLazy.IsPresent)
         } elseif (!([string]::IsNullOrEmpty($Name))) {
             Write-Verbose "Get Task Sequence Package by Name '$Name'."
-            Get-CMInstance -ClassName "SMS_TaskSequencePackage" -Filter "Name='$Name'" -ContainsLazy:$IncludeLazyProperties
+            Get-CMInstance -ClassName "SMS_TaskSequencePackage" -Filter "Name='$Name'" -IncludeLazy:($IncludeLazy.IsPresent)
         } 
     }
 }
